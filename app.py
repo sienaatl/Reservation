@@ -59,9 +59,21 @@ BOOKING_LOCK_KEY = 782342
 # multiple gunicorn workers booting at once don't race on schema creation.
 INIT_DB_LOCK_KEY = 918273
 
+ALLOWED_ORIGIN = os.getenv("ALLOWED_ORIGIN", "")
+
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "change-me-in-production")
 app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax", SESSION_COOKIE_SECURE=os.getenv("COOKIE_SECURE", "true").lower() in {"1","true","yes","on"}, PERMANENT_SESSION_LIFETIME=timedelta(hours=SESSION_HOURS))
+
+
+@app.after_request
+def add_cors_headers(response):
+    # Only the public booking API is meant to be called from another origin.
+    if ALLOWED_ORIGIN and request.path == "/api/book":
+        response.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN
+        response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    return response
 
 
 class PGConnection:
@@ -989,30 +1001,25 @@ def availability():
     })
 
 
-@app.post("/book")
-def book():
-    guest_name = request.form.get("guest_name", "").strip()
-    email = request.form.get("email", "").strip()
-    phone = request.form.get("phone", "").strip()
-    party_size = request.form.get("party_size", type=int)
-    reservation_at_raw = request.form.get("reservation_at", "").strip()
-    occasion = request.form.get("occasion", "").strip()
-    notes = request.form.get("notes", "").strip()
-    sms_opt_in = 1 if request.form.get("sms_opt_in") else 0
-    marketing_opt_in = 1 if request.form.get("marketing_opt_in") else 0
+def _create_reservation(guest_name, email, phone, party_size, reservation_at_raw,
+                         occasion, notes, sms_opt_in, marketing_opt_in):
+    """Shared booking logic used by both the HTML form (/book) and the JSON
+    API (/api/book). Returns a dict describing success or failure."""
+    guest_name = (guest_name or "").strip()
+    email = (email or "").strip()
+    phone = (phone or "").strip()
+    occasion = (occasion or "").strip()
+    notes = (notes or "").strip()
 
     if not all([guest_name, email, phone, party_size, reservation_at_raw]):
-        flash("Please complete all required fields.", "error")
-        return redirect(url_for("index"))
-    if party_size < 1 or party_size > 20:
-        flash("Online reservations are available for parties of 1 to 20 guests.", "error")
-        return redirect(url_for("index"))
+        return {"ok": False, "status": 400, "error": "Please complete all required fields."}
+    if not party_size or party_size < 1 or party_size > 20:
+        return {"ok": False, "status": 400, "error": "Online reservations are available for parties of 1 to 20 guests."}
 
     try:
         reservation_at = parse_dt(reservation_at_raw)
     except ValueError:
-        flash("Please choose a valid reservation time.", "error")
-        return redirect(url_for("index"))
+        return {"ok": False, "status": 400, "error": "Please choose a valid reservation time."}
 
     conn = db()
     try:
@@ -1020,8 +1027,7 @@ def book():
         tables = available_tables(reservation_at, party_size)
         if not tables:
             conn.rollback(); conn.close()
-            flash("That time is no longer available. Please choose another time.", "error")
-            return redirect(url_for("index"))
+            return {"ok": False, "status": 409, "error": "That time is no longer available. Please choose another time."}
         chosen = tables[0]
         reservation_id = uuid.uuid4().hex[:10].upper()
         manage_token = secrets.token_urlsafe(32)
@@ -1043,7 +1049,9 @@ def book():
         )
         conn.commit()
     except (psycopg2.OperationalError, psycopg2.IntegrityError):
-        conn.rollback(); conn.close(); flash("Another booking was completed at the same time. Please select another slot.", "error"); return redirect(url_for("index"))
+        conn.rollback(); conn.close()
+        return {"ok": False, "status": 409, "error": "Another booking was completed at the same time. Please select another slot."}
+
     reservation = conn.execute(
         "SELECT * FROM reservations WHERE id = ?", (reservation_id,)
     ).fetchone()
@@ -1057,7 +1065,8 @@ def book():
     conn.commit()
     conn.close()
 
-    if send_reservation_email(reservation, "confirmed"):
+    email_sent = send_reservation_email(reservation, "confirmed")
+    if email_sent:
         conn = db()
         conn.execute(
             "UPDATE reservations SET email_sent_at = ? WHERE id = ?",
@@ -1065,18 +1074,89 @@ def book():
         )
         conn.commit()
         conn.close()
-    else:
-        flash("Reservation confirmed. Email delivery is not configured or could not be completed.", "error")
 
-    if sms_opt_in and send_reservation_sms(reservation, "confirmed"):
-        conn = db()
-        conn.execute("UPDATE reservations SET sms_confirmation_sent_at=? WHERE id=?",
-                     (datetime.now().isoformat(timespec="seconds"), reservation_id))
-        conn.commit(); conn.close()
-    elif sms_opt_in and SMS_ENABLED:
+    sms_sent = False
+    if sms_opt_in:
+        sms_sent = send_reservation_sms(reservation, "confirmed")
+        if sms_sent:
+            conn = db()
+            conn.execute("UPDATE reservations SET sms_confirmation_sent_at=? WHERE id=?",
+                         (datetime.now().isoformat(timespec="seconds"), reservation_id))
+            conn.commit(); conn.close()
+
+    conn = db()
+    reservation = conn.execute("SELECT * FROM reservations WHERE id = ?", (reservation_id,)).fetchone()
+    conn.close()
+
+    return {"ok": True, "status": 201, "reservation": reservation, "email_sent": email_sent, "sms_sent": sms_sent}
+
+
+@app.post("/book")
+def book():
+    guest_name = request.form.get("guest_name", "").strip()
+    email = request.form.get("email", "").strip()
+    phone = request.form.get("phone", "").strip()
+    party_size = request.form.get("party_size", type=int)
+    reservation_at_raw = request.form.get("reservation_at", "").strip()
+    occasion = request.form.get("occasion", "").strip()
+    notes = request.form.get("notes", "").strip()
+    sms_opt_in = 1 if request.form.get("sms_opt_in") else 0
+    marketing_opt_in = 1 if request.form.get("marketing_opt_in") else 0
+
+    result = _create_reservation(guest_name, email, phone, party_size, reservation_at_raw,
+                                  occasion, notes, sms_opt_in, marketing_opt_in)
+    if not result["ok"]:
+        flash(result["error"], "error")
+        return redirect(url_for("index"))
+
+    if not result["email_sent"]:
+        flash("Reservation confirmed. Email delivery is not configured or could not be completed.", "error")
+    if sms_opt_in and not result["sms_sent"] and SMS_ENABLED:
         flash("Reservation confirmed, but the confirmation text could not be delivered.", "error")
 
-    return redirect(url_for("confirmation", reservation_id=reservation_id))
+    return redirect(url_for("confirmation", reservation_id=result["reservation"]["id"]))
+
+
+@app.route("/api/book", methods=["POST", "OPTIONS"])
+def api_book():
+    if request.method == "OPTIONS":
+        return ("", 204)
+
+    data = request.get_json(silent=True) or request.form
+    guest_name = data.get("guest_name")
+    email = data.get("email")
+    phone = data.get("phone")
+    try:
+        party_size = int(data.get("party_size"))
+    except (TypeError, ValueError):
+        party_size = None
+    reservation_at_raw = data.get("reservation_at")
+    occasion = data.get("occasion")
+    notes = data.get("notes")
+    sms_opt_in = 1 if str(data.get("sms_opt_in") or "").lower() in {"1", "true", "on", "yes"} else 0
+    marketing_opt_in = 1 if str(data.get("marketing_opt_in") or "").lower() in {"1", "true", "on", "yes"} else 0
+
+    result = _create_reservation(guest_name, email, phone, party_size, reservation_at_raw,
+                                  occasion, notes, sms_opt_in, marketing_opt_in)
+    if not result["ok"]:
+        return jsonify({"ok": False, "error": result["error"]}), result["status"]
+
+    r = result["reservation"]
+    return jsonify({
+        "ok": True,
+        "reservation": {
+            "id": r["id"],
+            "guest_name": r["guest_name"],
+            "email": r["email"],
+            "phone": r["phone"],
+            "party_size": r["party_size"],
+            "reservation_at": r["reservation_at"],
+            "status": r["status"],
+        },
+        "manage_url": public_url("guest_manage", token=r["manage_token"]),
+        "email_sent": result["email_sent"],
+        "sms_sent": result["sms_sent"],
+    }), result["status"]
 
 
 @app.get("/confirmation/<reservation_id>")
