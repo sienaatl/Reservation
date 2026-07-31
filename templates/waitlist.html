@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="admin-shell">
+  <div class="admin-heading"><div><p class="eyebrow">Host stand</p><h1>Waitlist & Walk-ins</h1></div></div>
+  <div class="ops-grid">
+    <form class="panel form-grid" method="post">
+      <input type="hidden" name="pin" value="{{ pin }}"><input type="hidden" name="action" value="add">
+      <h2>Add guest</h2>
+      <label>Name<input name="guest_name" required></label>
+      <label>Phone<input name="phone" required></label>
+      <label>Party size<input name="party_size" type="number" min="1" max="20" required></label>
+      <label>Quoted wait<input name="quoted_minutes" type="number" min="0" value="30"></label>
+      <label>Area<select name="area_preference"><option value="">First available</option><option>Main Dining</option><option>Covered Patio</option><option>Bar</option></select></label>
+      <label>Notes<textarea name="notes"></textarea></label>
+      <button class="seat-action">Add to Waitlist</button>
+    </form>
+    <section class="panel"><h2>Waiting now</h2>
+      {% for w in items %}
+      <article class="wait-card">
+        <div><strong>{{ w.guest_name }}</strong><small>{{ w.party_size }} guests · quoted {{ w.quoted_minutes }} min · {{ w.status }}</small></div>
+        <form method="post" class="wait-actions">
+          <input type="hidden" name="pin" value="{{ pin }}"><input type="hidden" name="wait_id" value="{{ w.id }}">
+          <select name="table_id">{% for t in tables if t.capacity >= w.party_size %}<option value="{{ t.id }}">{{ t.name }} · {{ t.area }} · {{ t.capacity }}</option>{% endfor %}</select>
+          <button name="action" value="seat" class="seat-action">Seat</button>
+          <button name="action" value="notify" class="secondary-action">Notify</button>
+          <button name="action" value="remove" class="secondary-action">Remove</button>
+        </form>
+      </article>
+      {% else %}<p class="muted-copy">Nobody is waiting.</p>{% endfor %}
+    </section>
+  </div>
+</section>
+{% endblock %}

@@ -1,0 +1,71 @@
+
+{% extends "base.html" %}
+{% block content %}
+<section class="guest-manage-shell">
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+      <div class="flash {{ category }}">{{ message }}</div>
+    {% endfor %}
+  {% endwith %}
+
+  <div class="guest-manage-card">
+    <div class="guest-manage-head">
+      <div>
+        <p class="eyebrow">MANAGE RESERVATION</p>
+        <h1>{{ reservation.guest_name }}</h1>
+        <p>Confirmation number: <strong>{{ reservation.id }}</strong></p>
+      </div>
+      <span class="status-pill {{ reservation.status }}">{{ reservation.status.replace('_',' ').title() }}</span>
+    </div>
+
+    {% if reservation.status != 'cancelled' and reservation.status != 'completed' %}
+    <form method="post">
+      <input type="hidden" name="action" value="update">
+      <div class="edit-grid">
+        <label>Guest name
+          <input name="guest_name" value="{{ reservation.guest_name }}" required>
+        </label>
+        <label>Party size
+          <input name="party_size" type="number" min="1" max="20" value="{{ reservation.party_size }}" required>
+        </label>
+        <label>Date and time
+          <input name="reservation_at" type="datetime-local" value="{{ reservation.reservation_at }}" required>
+        </label>
+        <label>Phone
+          <input name="phone" type="tel" value="{{ reservation.phone }}" required>
+          <label class="sms-consent"><input type="checkbox" name="sms_opt_in" value="1" {% if reservation.sms_opt_in %}checked{% endif %}> Send confirmations and reminders by SMS.</label>
+        </label>
+        <label class="edit-wide">Email
+          <input name="email" type="email" value="{{ reservation.email }}" required>
+        </label>
+        <label class="edit-wide">Occasion
+          <select name="occasion">
+            {% for item in ['', 'Birthday', 'Anniversary', 'Date Night', 'Business Dinner', 'Celebration'] %}
+            <option value="{{ item }}" {% if reservation.occasion == item %}selected{% endif %}>{{ item or 'None' }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label class="edit-wide">Special requests
+          <textarea name="notes" rows="4" placeholder="Allergies, accessibility needs, seating requests...">{{ reservation.notes or '' }}</textarea>
+        </label>
+      </div>
+      <button class="primary-button full-button" type="submit">Save Reservation Changes</button>
+    </form>
+
+    <div class="cancel-zone">
+      <h2>Cancel reservation</h2>
+      <p>This action will release your table. You will receive a cancellation email.</p>
+      <form method="post">
+        <input type="hidden" name="action" value="cancel">
+        <button class="danger" type="submit" onclick="return confirm('Are you sure you want to cancel this reservation?')">Cancel Reservation</button>
+      </form>
+    </div>
+    {% else %}
+      <div class="closed-reservation">
+        <h2>This reservation is {{ reservation.status.replace('_',' ') }}.</h2>
+        <p>Contact Siena at 404-488-3399 if you need assistance.</p>
+      </div>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}

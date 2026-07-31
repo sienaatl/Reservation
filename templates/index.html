@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero">
+  <div class="hero-copy">
+    <p class="eyebrow">DOWNTOWN ALPHARETTA</p>
+    <h1>Your table is waiting.</h1>
+    <p>Reserve an unforgettable dining experience at Siena.</p>
+  </div>
+</section>
+
+<section class="booking-shell">
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+      <div class="flash {{ category }}">{{ message }}</div>
+    {% endfor %}
+  {% endwith %}
+
+  <form class="booking-card" method="post" action="{{ url_for('book') }}">
+    <div class="step">
+      <span class="step-number">1</span>
+      <div>
+        <h2>Find a table</h2>
+        <p>Select your party size and preferred date.</p>
+      </div>
+    </div>
+
+    <div class="grid three">
+      <label>Party size
+        <select id="party_size" name="party_size" required>
+          {% for n in range(1, 21) %}
+          <option value="{{ n }}">{{ n }} guest{% if n != 1 %}s{% endif %}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Date
+        <input id="date" type="date" required>
+      </label>
+      <label>Time
+        <select id="reservation_at" name="reservation_at" required>
+          <option value="">Select date first</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="step">
+      <span class="step-number">2</span>
+      <div>
+        <h2>Guest details</h2>
+        <p>We will use this information for your reservation.</p>
+      </div>
+    </div>
+
+    <div class="grid two">
+      <label>Full name
+        <input name="guest_name" placeholder="Your name" required>
+      </label>
+      <label>Email
+        <input name="email" type="email" placeholder="you@example.com" required>
+      </label>
+      <label>Phone
+        <input name="phone" type="tel" placeholder="(404) 555-0123" required>
+      </label>
+      <label class="sms-consent"><input type="checkbox" name="sms_opt_in" value="1" checked> Send transactional reservation confirmations and reminders by text message. Message and data rates may apply.</label>
+      <label class="sms-consent"><input type="checkbox" name="marketing_opt_in" value="1"> Send me Siena offers and event updates by text. Consent is optional and not required to reserve. Reply STOP to opt out.</label>
+      <label>Occasion
+        <select name="occasion">
+          <option value="">None</option>
+          <option>Birthday</option>
+          <option>Anniversary</option>
+          <option>Date Night</option>
+          <option>Business Dinner</option>
+          <option>Celebration</option>
+        </select>
+      </label>
+    </div>
+
+    <label>Special requests
+      <textarea name="notes" rows="3" placeholder="Allergies, accessibility needs, seating requests..."></textarea>
+    </label>
+
+    <button class="primary" type="submit">Complete reservation</button>
+    <p class="fine-print">Reservations are held for 15 minutes. Seating requests are not guaranteed.</p>
+  </form>
+</section>
+
+<script>
+const dateInput = document.getElementById('date');
+const partyInput = document.getElementById('party_size');
+const timeInput = document.getElementById('reservation_at');
+
+const today = new Date();
+dateInput.min = today.toISOString().split('T')[0];
+dateInput.value = dateInput.min;
+
+async function loadAvailability() {
+  timeInput.innerHTML = '<option>Loading...</option>';
+  const response = await fetch(`/api/availability?date=${dateInput.value}&party_size=${partyInput.value}`);
+  const data = await response.json();
+  if (!data.slots || data.slots.length === 0) {
+    timeInput.innerHTML = '<option value="">No times available</option>';
+    return;
+  }
+  timeInput.innerHTML = data.slots.map(slot =>
+    `<option value="${slot.value}">${slot.label}</option>`
+  ).join('');
+}
+dateInput.addEventListener('change', loadAvailability);
+partyInput.addEventListener('change', loadAvailability);
+loadAvailability();
+</script>
+{% endblock %}

@@ -1,0 +1,184 @@
+
+{% extends "base.html" %}
+{% block content %}
+<section class="floor-shell">
+  <div class="floor-toolbar">
+    <div>
+      <p class="eyebrow">SIENA HOST STAND</p>
+      <h1>Live Floor Plan</h1>
+    </div>
+    <div class="floor-controls">
+      <select id="area">
+        <option>Main Dining</option>
+        <option>Covered Patio</option>
+        <option>Bar</option>
+      </select>
+      <input id="floor-at" type="datetime-local" value="{{ now }}">
+      <button id="refresh-floor">Refresh</button>
+    </div>
+  </div>
+
+  <div class="legend">
+    <span><i class="dot available"></i>Available</span>
+    <span><i class="dot confirmed"></i>Reserved</span>
+    <span><i class="dot seated"></i>Seated</span>
+    <span><i class="dot unavailable"></i>Unavailable</span>
+  </div>
+
+  <div class="floor-layout">
+    <div class="floor-canvas" id="floor-canvas"></div>
+    <aside class="floor-sidebar">
+      <h2>Table details</h2>
+      <div id="table-details" class="empty-details">Tap a table to view details or seat a guest.</div>
+      <div class="combo-box">
+        <h3>Combinations</h3>
+        <div id="combo-list"></div>
+      </div>
+    </aside>
+  </div>
+</section>
+
+<script>
+const pin = {{ pin|tojson }};
+const canvas = document.getElementById('floor-canvas');
+const details = document.getElementById('table-details');
+const areaSelect = document.getElementById('area');
+const atInput = document.getElementById('floor-at');
+let currentFloorData = null;
+
+function esc(value) {
+  return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function timeLabel(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  return date.toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'});
+}
+
+async function loadFloor(keepDetails = false) {
+  const url = `/api/floorplan?pin=${encodeURIComponent(pin)}&area=${encodeURIComponent(areaSelect.value)}&at=${encodeURIComponent(atInput.value)}`;
+  const response = await fetch(url);
+  const data = await response.json();
+  currentFloorData = data;
+  canvas.innerHTML = '';
+
+  data.tables.forEach(t => {
+    const el = document.createElement('button');
+    el.className = `floor-table ${t.shape} ${t.display_status} ${t.reservation?.timer_state || ''}`;
+    el.style.left = `${t.x}%`;
+    el.style.top = `${t.y}%`;
+    el.style.width = `${t.width}%`;
+    el.style.height = `${t.height}%`;
+    el.setAttribute('aria-label', `Table ${t.name}, ${t.display_status}`);
+    const guest = t.reservation ? `<em>${esc(t.reservation.guest_name.split(' ')[0])}</em>` : '';
+    el.innerHTML = `<strong>${esc(t.name)}</strong><small>${t.capacity} seat${t.capacity === 1 ? '' : 's'}</small>${guest}`;
+    el.addEventListener('click', () => showDetails(t));
+    canvas.appendChild(el);
+  });
+
+  document.getElementById('combo-list').innerHTML = data.combinations.map(c =>
+    `<div class="combo-row"><strong>${esc(c.name)}</strong><span>${esc(c.capacity)} guests</span></div>`
+  ).join('');
+
+  if (!keepDetails) {
+    details.innerHTML = 'Tap a table to view details or seat a guest.';
+    details.className = 'empty-details';
+  }
+}
+
+async function showDetails(t) {
+  details.className = '';
+  if (t.reservation) {
+    details.innerHTML = `
+      <div class="status-pill ${esc(t.display_status)}">${esc(t.display_status)}</div>
+      <h3>Table ${esc(t.name)}</h3>
+      <dl>
+        <dt>Guest</dt><dd>${esc(t.reservation.guest_name)}</dd>
+        <dt>Party</dt><dd>${esc(t.reservation.party_size)}</dd>
+        <dt>Time</dt><dd>${esc(timeLabel(t.reservation.reservation_at))}</dd>
+        <dt>Turn time</dt><dd>${esc(t.reservation.duration_minutes)} minutes</dd>
+        <dt>Expected end</dt><dd>${esc(timeLabel(t.reservation.expected_end))}</dd>
+        <dt>Time left</dt><dd class="timer-${esc(t.reservation.timer_state)}">${t.reservation.minutes_remaining <= 0 ? 'Overdue' : esc(t.reservation.minutes_remaining) + ' min'}</dd>
+        <dt>Phone</dt><dd>${esc(t.reservation.phone)}</dd>
+        <dt>Occasion</dt><dd>${esc(t.reservation.occasion || '—')}</dd>
+        <dt>Notes</dt><dd>${esc(t.reservation.notes || '—')}</dd>
+      </dl>
+      <div class="table-action-stack">
+        ${t.display_status === 'confirmed' ? `<button class="seat-action" onclick="changeReservationStatus('${esc(t.reservation.id)}','seated')">Mark Seated</button>` : ''}
+        ${t.display_status === 'seated' ? `<button class="complete-action" onclick="changeReservationStatus('${esc(t.reservation.id)}','completed')">Complete & Release Table</button>` : ''}
+        ${t.display_status === 'seated' ? `<button class="secondary-action" onclick="changeReservationStatus('${esc(t.reservation.id)}','confirmed')">Return to Confirmed</button>` : ''}
+      </div>`;
+  } else {
+    const response = await fetch(`/api/seat-candidates?pin=${encodeURIComponent(pin)}&at=${encodeURIComponent(atInput.value)}`);
+    const data = await response.json();
+    const candidates = (data.reservations || []).filter(r => Number(r.party_size) <= Number(t.capacity));
+
+    const options = candidates.map(r =>
+      `<option value="${esc(r.id)}">${esc(timeLabel(r.reservation_at))} · ${esc(r.guest_name)} · ${esc(r.party_size)} guest${r.party_size === 1 ? '' : 's'}${r.table_name ? ` · assigned ${esc(r.table_name)}` : ''}</option>`
+    ).join('');
+
+    details.innerHTML = `
+      <div class="status-pill available">Available</div>
+      <h3>Table ${esc(t.name)}</h3>
+      <p>Capacity: <strong>${esc(t.capacity)} guest${t.capacity === 1 ? '' : 's'}</strong></p>
+      <p>Area: ${esc(t.area)}</p>
+      <div class="seat-panel">
+        <h4>Seat a guest</h4>
+        ${candidates.length ? `
+          <label>Confirmed reservation
+            <select id="seat-reservation">
+              <option value="">Choose a guest</option>
+              ${options}
+            </select>
+          </label>
+          <button class="seat-action" onclick="seatGuest(${Number(t.id)})">Seat at Table ${esc(t.name)}</button>
+        ` : `<p class="muted-copy">No confirmed reservations currently fit this table.</p>`}
+      </div>`;
+  }
+}
+
+async function seatGuest(tableId) {
+  const select = document.getElementById('seat-reservation');
+  const reservationId = select ? select.value : '';
+  if (!reservationId) {
+    alert('Choose a reservation first.');
+    return;
+  }
+
+  const body = new URLSearchParams({reservation_id: reservationId, pin});
+  const response = await fetch(`/api/tables/${tableId}/seat`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    body
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    alert(data.error || 'Unable to seat guest.');
+    return;
+  }
+  await loadFloor();
+}
+
+async function changeReservationStatus(reservationId, status) {
+  const body = new URLSearchParams({status, pin});
+  const response = await fetch(`/api/reservations/${encodeURIComponent(reservationId)}/table-status`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    body
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    alert(data.error || 'Unable to update the table.');
+    return;
+  }
+  await loadFloor();
+}
+
+document.getElementById('refresh-floor').addEventListener('click', () => loadFloor());
+areaSelect.addEventListener('change', () => loadFloor());
+atInput.addEventListener('change', () => loadFloor());
+loadFloor();
+setInterval(() => loadFloor(true), 30000);
+</script>
+{% endblock %}

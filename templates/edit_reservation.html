@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="edit-shell">
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}<div class="flash {{ category }}">{{ message }}</div>{% endfor %}
+  {% endwith %}
+
+  <div class="edit-header">
+    <div>
+      <p class="eyebrow">SIENA BACKEND</p>
+      <h1>Edit Reservation</h1>
+      <p>Confirmation {{ reservation.id }}</p>
+    </div>
+    <a class="outline-button" href="{{ url_for('admin', date=reservation.reservation_at[:10], pin=pin) }}">Back to Dashboard</a>
+  </div>
+
+  <form class="edit-card" method="post">
+    <input type="hidden" name="pin" value="{{ pin }}">
+    <div class="edit-grid">
+      <label>Guest name
+        <input name="guest_name" value="{{ reservation.guest_name }}" required>
+      </label>
+      <label>Party size
+        <input name="party_size" type="number" min="1" max="20" value="{{ reservation.party_size }}" required>
+      </label>
+      <label>Date and time
+        <input name="reservation_at" type="datetime-local" value="{{ reservation.reservation_at }}" required>
+      </label>
+      <label>Dining duration
+        <select name="duration_minutes">
+          {% for minutes,label in [(60,'1 hour'),(75,'1 hour 15 minutes'),(90,'1 hour 30 minutes'),(105,'1 hour 45 minutes'),(120,'2 hours'),(150,'2 hours 30 minutes'),(180,'3 hours')] %}
+          <option value="{{ minutes }}" {% if reservation.duration_minutes == minutes %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Table
+        <select name="table_id">
+          <option value="">Unassigned</option>
+          {% for t in tables %}
+          <option value="{{ t.id }}" {% if reservation.table_id == t.id %}selected{% endif %}>{{ t.name }} · {{ t.area }} · {{ t.capacity }} seats</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Status
+        <select name="status">
+          {% for status in ['confirmed','seated','walk_in','completed','cancelled','no_show'] %}
+          <option value="{{ status }}" {% if reservation.status == status %}selected{% endif %}>{{ status.replace('_',' ').title() }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Phone
+        <input name="phone" type="tel" value="{{ reservation.phone }}">
+      </label>
+      <label>Email
+        <input name="email" type="email" value="{{ reservation.email }}">
+      </label>
+      <label class="edit-wide">Occasion
+        <input name="occasion" value="{{ reservation.occasion or '' }}" placeholder="Birthday, anniversary, business dinner...">
+      </label>
+      <label class="edit-wide">Guest notes
+        <textarea name="notes" rows="5" placeholder="Allergies, seating preferences, VIP notes...">{{ reservation.notes or '' }}</textarea>
+      </label>
+    </div>
+    <div class="edit-footer">
+      <a class="outline-button" href="{{ url_for('admin', date=reservation.reservation_at[:10], pin=pin) }}">Cancel</a>
+      <button class="primary-button" type="submit">Save Changes</button>
+    </div>
+  </form>
+</section>
+{% endblock %}

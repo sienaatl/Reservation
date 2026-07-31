@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{ app_name }}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="{{ url_for('index') }}">
+      <img class="brand-logo" src="{{ url_for('static', filename='siena-logo.png') }}" alt="Siena Restaurant and Bar">
+    </a>
+    <nav class="topnav">
+      <a href="{{ url_for('index') }}">Reserve</a>
+      {% if pin %}
+      <a href="{{ url_for('manager_overview', pin=pin) }}">Manager</a>
+      <a href="{{ url_for('floorplan', pin=pin) }}">Floor Plan</a>
+      <a href="{{ url_for('timeline', pin=pin) }}">Timeline</a>
+      <a href="{{ url_for('admin', pin=pin) }}">Reservations</a>
+      <a href="{{ url_for('waitlist_page', pin=pin) }}">Waitlist</a>
+      <a href="{{ url_for('servers_page', pin=pin) }}">Servers</a>
+      <a href="{{ url_for('guests_page', pin=pin) }}">Guests</a>
+      <a href="{{ url_for('marketing_page', pin=pin) }}">Marketing</a>
+      {% endif %}
+    {% if session.get('staff_user_id') %}<a href="{{ url_for('settings_page') }}">Settings</a><a href="{{ url_for('audit_page') }}">Audit</a><form method="post" action="{{ url_for('staff_logout') }}" style="display:inline"><button class="nav-logout">Sign out</button></form>{% endif %}</nav>
+  </header>
+  <main>{% block content %}{% endblock %}</main>
+</body>
+</html>

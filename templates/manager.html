@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="admin-shell">
+  <div class="admin-heading"><div><p class="eyebrow">Live operations</p><h1>Manager Overview</h1></div>
+  <form><input type="hidden" name="pin" value="{{ pin }}"><input type="date" name="date" value="{{ date_str }}" onchange="this.form.submit()"></form></div>
+  <div class="stats-grid">
+    <article><span>Covers</span><strong>{{ stats.covers }}</strong></article>
+    <article><span>Bookings</span><strong>{{ stats.bookings }}</strong></article>
+    <article><span>Currently seated</span><strong>{{ stats.seated or 0 }}</strong></article>
+    <article><span>Waitlist</span><strong>{{ waiting }}</strong></article>
+  </div>
+  <div class="ops-grid">
+    <section class="panel"><h2>Overdue tables</h2>
+      {% for r in overdue %}<div class="ops-row"><div><strong>{{ r.table_name }} · {{ r.guest_name }}</strong><small>{{ r.party_size }} guests</small></div><span class="danger-chip">Overdue</span></div>
+      {% else %}<p class="muted-copy">No tables are overdue.</p>{% endfor %}
+    </section>
+    <section class="panel"><h2>Large parties</h2>
+      {% for r in upcoming_large %}<div class="ops-row"><div><strong>{{ r.guest_name }}</strong><small>{{ r.reservation_at[11:16] }} · {{ r.party_size }} guests · {{ r.table_name or 'Unassigned' }}</small></div></div>
+      {% else %}<p class="muted-copy">No large parties scheduled.</p>{% endfor %}
+    </section>
+  </div>
+</section>
+{% endblock %}

@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="dashboard-shell">
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}<div class="flash {{ category }}">{{ message }}</div>{% endfor %}
+  {% endwith %}
+
+  <div class="dashboard-header">
+    <div>
+      <p class="eyebrow">SIENA BACKEND</p>
+      <h1>Reservation Dashboard</h1>
+      <p class="dashboard-subtitle">Manage bookings, tables, guest status, and tonight's service.</p>
+    </div>
+    <div class="dashboard-actions">
+      <a class="outline-button" href="{{ url_for('floorplan', pin=pin) }}">Live Floor Plan</a>
+      <button class="primary-button" type="button" onclick="document.getElementById('new-booking').showModal()">+ New Reservation</button>
+    </div>
+  </div>
+
+  <div class="metric-grid">
+    <article class="metric-card"><span>Reservations</span><strong>{{ stats.bookings }}</strong><small>{{ stats.confirmed }} confirmed</small></article>
+    <article class="metric-card"><span>Covers</span><strong>{{ stats.covers }}</strong><small>{{ stats.occupancy }}% projected occupancy</small></article>
+    <article class="metric-card"><span>Seated</span><strong>{{ stats.seated }}</strong><small>Currently in service</small></article>
+    <article class="metric-card"><span>Walk-ins</span><strong>{{ stats.walk_in }}</strong><small>Added by host</small></article>
+    <article class="metric-card warning"><span>Needs table</span><strong>{{ stats.unassigned }}</strong><small>Unassigned reservations</small></article>
+    <article class="metric-card"><span>No-shows / Cancelled</span><strong>{{ stats.no_show + stats.cancelled }}</strong><small>{{ stats.no_show }} no-shows</small></article>
+  </div>
+
+  <div class="dashboard-layout">
+    <div class="dashboard-main">
+      <section class="dashboard-panel">
+        <div class="panel-toolbar">
+          <div>
+            <h2>Reservation Book</h2>
+            <p>{{ date_str }}</p>
+          </div>
+          <form method="get" class="dashboard-filter">
+            <input type="hidden" name="pin" value="{{ pin }}">
+            <input type="date" name="date" value="{{ date_str }}">
+            <select name="status">
+              {% for value,label in [('all','All statuses'),('confirmed','Confirmed'),('seated','Seated'),('walk_in','Walk-ins'),('completed','Completed'),('cancelled','Cancelled'),('no_show','No-show')] %}
+              <option value="{{ value }}" {% if status_filter==value %}selected{% endif %}>{{ label }}</option>
+              {% endfor %}
+            </select>
+            <input name="search" value="{{ search }}" placeholder="Search guest, phone or confirmation">
+            <button type="submit">Filter</button>
+          </form>
+        </div>
+
+        <div class="reservation-list">
+          {% for r in reservations %}
+          <article class="reservation-row status-{{ r.status }}">
+            <div class="reservation-time">{{ r.reservation_at[11:16] }}</div>
+            <div class="guest-block">
+              <strong>{{ r.guest_name }}</strong>
+              <span>{{ r.phone }} · {{ r.email }}</span>
+              {% if r.occasion %}<small>{{ r.occasion }}</small>{% endif %}
+            </div>
+            <div class="party-block"><strong>{{ r.party_size }}</strong><span>guests</span></div>
+            <form class="compact-form" method="post" action="{{ url_for('assign_reservation', reservation_id=r.id) }}">
+              <input type="hidden" name="pin" value="{{ pin }}"><input type="hidden" name="date" value="{{ date_str }}">
+              <select name="table_id" onchange="this.form.submit()">
+                <option value="">No table</option>
+                {% for t in tables %}<option value="{{ t.id }}" {% if r.table_id==t.id %}selected{% endif %}>{{ t.name }} · {{ t.area }}</option>{% endfor %}
+              </select>
+            </form>
+            <form class="compact-form" method="post" action="{{ url_for('update_status', reservation_id=r.id) }}">
+              <input type="hidden" name="pin" value="{{ pin }}"><input type="hidden" name="date" value="{{ date_str }}">
+              <select class="status-select status-{{ r.status }}" name="status" onchange="this.form.submit()">
+                {% for status in ['confirmed','seated','walk_in','completed','cancelled','no_show'] %}
+                <option value="{{ status }}" {% if r.status==status %}selected{% endif %}>{{ status.replace('_',' ').title() }}</option>
+                {% endfor %}
+              </select>
+            </form>
+            <div class="reservation-actions">
+              <span class="confirmation-code">{{ r.id }}</span>
+              <a class="edit-reservation-button" href="{{ url_for('edit_reservation', reservation_id=r.id, pin=pin) }}">Edit</a>
+              <form method="post" action="{{ url_for('admin_resend_email', reservation_id=r.id) }}" class="inline-action-form">
+                <input type="hidden" name="pin" value="{{ pin }}">
+                <button type="submit" class="small-action-button">Resend Email</button>
+              </form>
+            </div>
+          </article>
+          {% else %}<div class="empty-state">No reservations match this date and filter.</div>{% endfor %}
+        </div>
+      </section>
+    </div>
+
+    <aside class="dashboard-side">
+      <section class="dashboard-panel compact-panel">
+        <h2>Dining Areas</h2>
+        {% for area in area_counts %}
+        <div class="area-summary"><div><strong>{{ area.area }}</strong><span>{{ area.table_count }} tables</span></div><b>{{ area.occupied or 0 }} active</b></div>
+        {% endfor %}
+        <a class="full-outline" href="{{ url_for('floorplan', pin=pin) }}">View live floor plan</a>
+      </section>
+
+      <section class="dashboard-panel compact-panel">
+        <h2>Service Snapshot</h2>
+        <div class="snapshot-row"><span>Confirmed</span><strong>{{ stats.confirmed }}</strong></div>
+        <div class="snapshot-row"><span>Seated</span><strong>{{ stats.seated }}</strong></div>
+        <div class="snapshot-row"><span>Completed</span><strong>{{ reservations|selectattr('status','equalto','completed')|list|length }}</strong></div>
+        <div class="snapshot-row"><span>Cancelled</span><strong>{{ stats.cancelled }}</strong></div>
+        <div class="snapshot-row"><span>No-show</span><strong>{{ stats.no_show }}</strong></div>
+      </section>
+
+      <section class="dashboard-panel compact-panel">
+        <h2>Quick Links</h2>
+        <a class="quick-link" href="{{ url_for('index') }}">Open guest booking page</a>
+        <a class="quick-link" href="{{ url_for('floorplan', pin=pin) }}">Open host floor plan</a>
+      </section>
+    </aside>
+  </div>
+</section>
+
+<dialog id="new-booking" class="booking-dialog">
+  <form method="post" action="{{ url_for('admin_create_reservation') }}">
+    <input type="hidden" name="pin" value="{{ pin }}"><input type="hidden" name="date" value="{{ date_str }}">
+    <div class="dialog-head"><div><p class="eyebrow">HOST ENTRY</p><h2>New Reservation</h2></div><button type="button" class="dialog-close" onclick="this.closest('dialog').close()">×</button></div>
+    <div class="dialog-grid">
+      <label>Guest name<input name="guest_name" required></label>
+      <label>Party size<input name="party_size" type="number" min="1" max="20" required></label>
+      <label>Date & time<input name="reservation_at" type="datetime-local" value="{{ now_local }}" required></label>
+      <label>Table<select name="table_id"><option value="">Unassigned</option>{% for t in tables %}<option value="{{ t.id }}">{{ t.name }} · {{ t.area }}</option>{% endfor %}</select></label>
+      <label>Phone<input name="phone" type="tel"></label>
+      <label>Email<input name="email" type="email"></label>
+      <label>Type<select name="status"><option value="confirmed">Reservation</option><option value="walk_in">Walk-in</option><option value="seated">Seat immediately</option></select></label>
+      <label>Occasion<input name="occasion" placeholder="Birthday, anniversary..."></label>
+      <label class="dialog-wide">Notes<textarea name="notes" rows="3"></textarea></label>
+    </div>
+    <button class="primary-button full-button" type="submit">Create Reservation</button>
+  </form>
+</dialog>
+{% endblock %}

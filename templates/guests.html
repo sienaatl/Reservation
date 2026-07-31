@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="admin-shell"><div class="admin-heading"><div><p class="eyebrow">Guest CRM</p><h1>Guest Profiles</h1></div>
+<form><input type="hidden" name="pin" value="{{ pin }}"><input name="q" value="{{ q }}" placeholder="Search guests"><button>Search</button></form></div>
+<div class="guest-grid">{% for g in guests %}<form method="post" class="panel guest-card"><input type="hidden" name="pin" value="{{ pin }}"><input type="hidden" name="profile_id" value="{{ g.id }}">
+<div class="guest-card-head"><div><h2>{{ g.guest_name }}</h2><small>{{ g.visit_count }} completed visits · {{ g.phone }}</small></div><label class="vip-check"><input type="checkbox" name="vip" {% if g.vip %}checked{% endif %}> VIP</label></div>
+<label>Allergies<input name="allergies" value="{{ g.allergies or '' }}"></label>
+<label>Preferences<input name="preferences" value="{{ g.preferences or '' }}"></label>
+<label>Favorite table<input name="favorite_table" value="{{ g.favorite_table or '' }}"></label>
+<label>Preferred server<input name="preferred_server" value="{{ g.preferred_server or '' }}"></label>
+<label>Birthday<input type="date" name="birthday" value="{{ g.birthday or '' }}"></label>
+<label class="sms-consent"><input type="checkbox" name="marketing_opt_in" {% if g.marketing_opt_in %}checked{% endif %}> Marketing SMS opt-in</label>
+<button class="seat-action">Save Profile</button></form>{% else %}<p>No guest profiles yet.</p>{% endfor %}</div></section>
+{% endblock %}
