@@ -55,6 +55,10 @@ ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "change-this-password")
 # "BEGIN IMMEDIATE" write-lock behavior).
 BOOKING_LOCK_KEY = 782342
 
+# Fixed key for a Postgres advisory lock that serializes init_db() so
+# multiple gunicorn workers booting at once don't race on schema creation.
+INIT_DB_LOCK_KEY = 918273
+
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "change-me-in-production")
 app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax", SESSION_COOKIE_SECURE=os.getenv("COOKIE_SECURE", "true").lower() in {"1","true","yes","on"}, PERMANENT_SESSION_LIFETIME=timedelta(hours=SESSION_HOURS))
@@ -105,6 +109,10 @@ def db():
 
 def init_db():
     conn = db()
+    # Session-level lock: held across every commit() below, released automatically
+    # when conn.close() ends the session. Blocks other workers/replicas from
+    # running schema setup concurrently instead of racing on it.
+    conn.execute("SELECT pg_advisory_lock(?)", (INIT_DB_LOCK_KEY,))
     conn.executescript("""
     CREATE TABLE IF NOT EXISTS restaurant_tables (
         id SERIAL PRIMARY KEY,
