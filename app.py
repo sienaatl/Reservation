@@ -1,5 +1,4 @@
 import os
-import sqlite3
 import uuid
 import secrets
 import smtplib
@@ -15,9 +14,11 @@ from flask import Flask, render_template, request, redirect, url_for, flash, jso
 from werkzeug.security import generate_password_hash, check_password_hash
 from twilio.rest import Client
 from twilio.base.exceptions import TwilioRestException
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
 APP_NAME = os.getenv("APP_NAME", "Siena Reservations")
-DATABASE = os.getenv("DATABASE", "/var/data/reservations.db" if os.path.isdir("/var/data") else "reservations.db")
+DATABASE_URL = os.getenv("DATABASE_URL", "")
 ADMIN_PIN = os.getenv("ADMIN_PIN", "2468")
 SLOT_MINUTES = int(os.getenv("SLOT_MINUTES", "30"))
 TURN_MINUTES = int(os.getenv("TURN_MINUTES", "90"))
@@ -49,17 +50,56 @@ SESSION_HOURS = int(os.getenv("SESSION_HOURS", "12"))
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "change-this-password")
 
+# Fixed key for a Postgres advisory lock that serializes the booking
+# check-then-insert path across concurrent requests (replaces SQLite's
+# "BEGIN IMMEDIATE" write-lock behavior).
+BOOKING_LOCK_KEY = 782342
+
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "change-me-in-production")
 app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax", SESSION_COOKIE_SECURE=os.getenv("COOKIE_SECURE", "true").lower() in {"1","true","yes","on"}, PERMANENT_SESSION_LIFETIME=timedelta(hours=SESSION_HOURS))
 
 
+class PGConnection:
+    """Thin sqlite3-style wrapper around a psycopg2 connection so the rest of
+    the app can keep using conn.execute(...)/executemany(...)/executescript(...)
+    exactly like it did against sqlite3, including '?' placeholders."""
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    @staticmethod
+    def _adapt(sql):
+        return sql.replace("?", "%s")
+
+    def execute(self, sql, params=()):
+        cur = self._conn.cursor()
+        cur.execute(self._adapt(sql), params)
+        return cur
+
+    def executemany(self, sql, seq_of_params):
+        cur = self._conn.cursor()
+        cur.executemany(self._adapt(sql), seq_of_params)
+        return cur
+
+    def executescript(self, sql):
+        cur = self._conn.cursor()
+        cur.execute(sql)
+        return cur
+
+    def commit(self):
+        self._conn.commit()
+
+    def rollback(self):
+        self._conn.rollback()
+
+    def close(self):
+        self._conn.close()
+
+
 def db():
-    conn = sqlite3.connect(DATABASE)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    conn.execute("PRAGMA busy_timeout=10000")
-    return conn
+    conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+    return PGConnection(conn)
 
 
 
@@ -67,7 +107,7 @@ def init_db():
     conn = db()
     conn.executescript("""
     CREATE TABLE IF NOT EXISTS restaurant_tables (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         name TEXT NOT NULL UNIQUE,
         capacity INTEGER NOT NULL,
         area TEXT NOT NULL DEFAULT 'Main Dining',
@@ -76,7 +116,8 @@ def init_db():
         width REAL NOT NULL DEFAULT 7,
         height REAL NOT NULL DEFAULT 12,
         shape TEXT NOT NULL DEFAULT 'rect',
-        active INTEGER NOT NULL DEFAULT 1
+        active INTEGER NOT NULL DEFAULT 1,
+        server_id INTEGER
     );
 
     CREATE TABLE IF NOT EXISTS reservations (
@@ -108,31 +149,26 @@ def init_db():
     );
 
     CREATE TABLE IF NOT EXISTS table_combinations (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         name TEXT NOT NULL UNIQUE,
         area TEXT NOT NULL,
         capacity INTEGER NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS table_combination_members (
-        combination_id INTEGER NOT NULL,
-        table_id INTEGER NOT NULL,
-        PRIMARY KEY(combination_id, table_id),
-        FOREIGN KEY(combination_id) REFERENCES table_combinations(id),
-        FOREIGN KEY(table_id) REFERENCES restaurant_tables(id)
+        combination_id INTEGER NOT NULL REFERENCES table_combinations(id),
+        table_id INTEGER NOT NULL REFERENCES restaurant_tables(id),
+        PRIMARY KEY(combination_id, table_id)
     );
 
     CREATE TABLE IF NOT EXISTS reservation_tables (
-        reservation_id TEXT NOT NULL,
-        table_id INTEGER NOT NULL,
-        PRIMARY KEY(reservation_id, table_id),
-        FOREIGN KEY(reservation_id) REFERENCES reservations(id),
-        FOREIGN KEY(table_id) REFERENCES restaurant_tables(id)
+        reservation_id TEXT NOT NULL REFERENCES reservations(id),
+        table_id INTEGER NOT NULL REFERENCES restaurant_tables(id),
+        PRIMARY KEY(reservation_id, table_id)
     );
 
-
     CREATE TABLE IF NOT EXISTS servers (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         name TEXT NOT NULL UNIQUE,
         active INTEGER NOT NULL DEFAULT 1
     );
@@ -153,7 +189,7 @@ def init_db():
     );
 
     CREATE TABLE IF NOT EXISTS guest_profiles (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         email TEXT,
         phone TEXT,
         guest_name TEXT NOT NULL,
@@ -183,7 +219,7 @@ def init_db():
     );
 
     CREATE TABLE IF NOT EXISTS staff_users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         username TEXT NOT NULL UNIQUE,
         password_hash TEXT NOT NULL,
         role TEXT NOT NULL DEFAULT 'host',
@@ -198,7 +234,7 @@ def init_db():
     );
 
     CREATE TABLE IF NOT EXISTS closures (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         closure_date TEXT NOT NULL,
         area TEXT NOT NULL DEFAULT 'All',
         reason TEXT,
@@ -206,7 +242,7 @@ def init_db():
     );
 
     CREATE TABLE IF NOT EXISTS audit_log (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         staff_username TEXT NOT NULL,
         action TEXT NOT NULL,
         entity_type TEXT,
@@ -215,54 +251,38 @@ def init_db():
         created_at TEXT NOT NULL
     );
     """)
+    conn.commit()
 
-    # Add new columns safely when upgrading an older database.
-    existing = {row["name"] for row in conn.execute("PRAGMA table_info(restaurant_tables)").fetchall()}
-    additions = {
-        "x": "REAL NOT NULL DEFAULT 10",
-        "y": "REAL NOT NULL DEFAULT 10",
-        "width": "REAL NOT NULL DEFAULT 7",
-        "height": "REAL NOT NULL DEFAULT 12",
-        "shape": "TEXT NOT NULL DEFAULT 'rect'",
-        "active": "INTEGER NOT NULL DEFAULT 1",
-    }
-    for column, definition in additions.items():
-        if column not in existing:
-            conn.execute(f"ALTER TABLE restaurant_tables ADD COLUMN {column} {definition}")
-
-    table_columns = {row["name"] for row in conn.execute("PRAGMA table_info(restaurant_tables)").fetchall()}
-    if "server_id" not in table_columns:
-        conn.execute("ALTER TABLE restaurant_tables ADD COLUMN server_id INTEGER")
-
-    reservation_columns = {row["name"] for row in conn.execute("PRAGMA table_info(reservations)").fetchall()}
-    reservation_additions = {
-        "manage_token": "TEXT",
-        "email_sent_at": "TEXT",
-        "sms_opt_in": "INTEGER NOT NULL DEFAULT 0",
-        "sms_confirmation_sent_at": "TEXT",
-        "sms_reminder_24h_sent_at": "TEXT",
-        "sms_reminder_2h_sent_at": "TEXT",
-        "sms_cancelled_sent_at": "TEXT",
-        "running_late_at": "TEXT",
-        "review_sms_sent_at": "TEXT",
-        "marketing_opt_in": "INTEGER NOT NULL DEFAULT 0",
-        "seated_at": "TEXT",
-        "completed_at": "TEXT",
-    }
-    for column, definition in reservation_additions.items():
-        if column not in reservation_columns:
-            conn.execute(f"ALTER TABLE reservations ADD COLUMN {column} {definition}")
-
-    guest_columns = {row["name"] for row in conn.execute("PRAGMA table_info(guest_profiles)").fetchall()}
-    guest_additions = {
-        "birthday": "TEXT",
-        "marketing_opt_in": "INTEGER NOT NULL DEFAULT 0",
-        "marketing_opt_out_at": "TEXT",
-        "birthday_sms_sent_year": "INTEGER",
-    }
-    for column, definition in guest_additions.items():
-        if column not in guest_columns:
-            conn.execute(f"ALTER TABLE guest_profiles ADD COLUMN {column} {definition}")
+    # Additive columns for databases created before a given feature shipped.
+    # Postgres' ADD COLUMN IF NOT EXISTS makes this safe to run unconditionally every boot.
+    alter_statements = [
+        "ALTER TABLE restaurant_tables ADD COLUMN IF NOT EXISTS x REAL NOT NULL DEFAULT 10",
+        "ALTER TABLE restaurant_tables ADD COLUMN IF NOT EXISTS y REAL NOT NULL DEFAULT 10",
+        "ALTER TABLE restaurant_tables ADD COLUMN IF NOT EXISTS width REAL NOT NULL DEFAULT 7",
+        "ALTER TABLE restaurant_tables ADD COLUMN IF NOT EXISTS height REAL NOT NULL DEFAULT 12",
+        "ALTER TABLE restaurant_tables ADD COLUMN IF NOT EXISTS shape TEXT NOT NULL DEFAULT 'rect'",
+        "ALTER TABLE restaurant_tables ADD COLUMN IF NOT EXISTS active INTEGER NOT NULL DEFAULT 1",
+        "ALTER TABLE restaurant_tables ADD COLUMN IF NOT EXISTS server_id INTEGER",
+        "ALTER TABLE reservations ADD COLUMN IF NOT EXISTS manage_token TEXT",
+        "ALTER TABLE reservations ADD COLUMN IF NOT EXISTS email_sent_at TEXT",
+        "ALTER TABLE reservations ADD COLUMN IF NOT EXISTS sms_opt_in INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE reservations ADD COLUMN IF NOT EXISTS sms_confirmation_sent_at TEXT",
+        "ALTER TABLE reservations ADD COLUMN IF NOT EXISTS sms_reminder_24h_sent_at TEXT",
+        "ALTER TABLE reservations ADD COLUMN IF NOT EXISTS sms_reminder_2h_sent_at TEXT",
+        "ALTER TABLE reservations ADD COLUMN IF NOT EXISTS sms_cancelled_sent_at TEXT",
+        "ALTER TABLE reservations ADD COLUMN IF NOT EXISTS running_late_at TEXT",
+        "ALTER TABLE reservations ADD COLUMN IF NOT EXISTS review_sms_sent_at TEXT",
+        "ALTER TABLE reservations ADD COLUMN IF NOT EXISTS marketing_opt_in INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE reservations ADD COLUMN IF NOT EXISTS seated_at TEXT",
+        "ALTER TABLE reservations ADD COLUMN IF NOT EXISTS completed_at TEXT",
+        "ALTER TABLE guest_profiles ADD COLUMN IF NOT EXISTS birthday TEXT",
+        "ALTER TABLE guest_profiles ADD COLUMN IF NOT EXISTS marketing_opt_in INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE guest_profiles ADD COLUMN IF NOT EXISTS marketing_opt_out_at TEXT",
+        "ALTER TABLE guest_profiles ADD COLUMN IF NOT EXISTS birthday_sms_sent_year INTEGER",
+    ]
+    for statement in alter_statements:
+        conn.execute(statement)
+    conn.commit()
 
     # Give existing reservations secure guest-management tokens.
     rows_without_tokens = conn.execute(
@@ -351,17 +371,19 @@ def init_db():
         for member in members:
             table_id = conn.execute("SELECT id FROM restaurant_tables WHERE name=?", (member,)).fetchone()["id"]
             conn.execute(
-                "INSERT OR IGNORE INTO table_combination_members(combination_id, table_id) VALUES (?, ?)",
+                "INSERT INTO table_combination_members(combination_id, table_id) VALUES (?, ?) "
+                "ON CONFLICT (combination_id, table_id) DO NOTHING",
                 (combo_id, table_id)
             )
 
     conn.execute("""
-        INSERT OR IGNORE INTO reservation_tables(reservation_id, table_id)
+        INSERT INTO reservation_tables(reservation_id, table_id)
         SELECT id, table_id FROM reservations WHERE table_id IS NOT NULL
+        ON CONFLICT (reservation_id, table_id) DO NOTHING
     """)
 
     for server_name in ("Server 1", "Server 2", "Server 3", "Server 4"):
-        conn.execute("INSERT OR IGNORE INTO servers(name) VALUES (?)", (server_name,))
+        conn.execute("INSERT INTO servers(name) VALUES (?) ON CONFLICT(name) DO NOTHING", (server_name,))
 
     defaults = {
         "open_hour": str(OPEN_HOUR), "close_hour": str(CLOSE_HOUR),
@@ -370,7 +392,7 @@ def init_db():
         "same_day_cutoff_minutes": "30"
     }
     for key, value in defaults.items():
-        conn.execute("INSERT OR IGNORE INTO app_settings(key,value) VALUES (?,?)", (key,value))
+        conn.execute("INSERT INTO app_settings(key,value) VALUES (?,?) ON CONFLICT(key) DO NOTHING", (key,value))
     if not conn.execute("SELECT 1 FROM staff_users LIMIT 1").fetchone():
         conn.execute("INSERT INTO staff_users(username,password_hash,role,created_at) VALUES (?,?,?,?)",
                      (ADMIN_USERNAME, generate_password_hash(ADMIN_PASSWORD), "manager", datetime.now().isoformat(timespec="seconds")))
@@ -559,9 +581,9 @@ def process_sms_reminders(now: datetime | None = None) -> dict:
     rows = conn.execute("""
         SELECT * FROM reservations
         WHERE status='confirmed' AND sms_opt_in=1
-          AND datetime(reservation_at) > datetime(?)
-          AND datetime(reservation_at) <= datetime(?, '+25 hours')
-        ORDER BY datetime(reservation_at)
+          AND reservation_at::timestamp > ?::timestamp
+          AND reservation_at::timestamp <= (?::timestamp + interval '25 hours')
+        ORDER BY reservation_at::timestamp
     """, (now.isoformat(timespec="minutes"), now.isoformat(timespec="minutes"))).fetchall()
     for r in rows:
         at = parse_dt(r["reservation_at"])
@@ -614,8 +636,8 @@ def process_review_requests(now: datetime | None = None) -> dict:
         WHERE status='completed' AND sms_opt_in=1
           AND review_sms_sent_at IS NULL
           AND completed_at IS NOT NULL
-          AND datetime(completed_at) <= datetime(?, '-60 minutes')
-          AND datetime(completed_at) >= datetime(?, '-3 days')
+          AND completed_at::timestamp <= (?::timestamp - interval '60 minutes')
+          AND completed_at::timestamp >= (?::timestamp - interval '3 days')
     """, (now.isoformat(timespec="seconds"), now.isoformat(timespec="seconds"))).fetchall()
     for r in rows:
         if send_reservation_sms(r, "review"):
@@ -634,7 +656,7 @@ def process_birthday_greetings(now: datetime | None = None) -> dict:
         SELECT * FROM guest_profiles
         WHERE birthday IS NOT NULL AND birthday != ''
           AND marketing_opt_in=1 AND marketing_opt_out_at IS NULL
-          AND strftime('%m-%d', birthday)=?
+          AND to_char(birthday::date, 'MM-DD')=?
           AND COALESCE(birthday_sms_sent_year,0) != ?
     """, (now.strftime('%m-%d'), now.year)).fetchall()
     for g in rows:
@@ -692,11 +714,11 @@ def reservation_conflicts_on_table(conn, table_id: int, at: datetime, duration_m
         JOIN reservation_tables rt ON rt.reservation_id = r.id
         WHERE rt.table_id = ?
           AND r.status IN ('confirmed', 'seated', 'walk_in')
-          AND datetime(CASE WHEN r.status='seated' AND r.seated_at IS NOT NULL
-                            THEN r.seated_at ELSE r.reservation_at END) < datetime(?)
-          AND datetime(CASE WHEN r.status='seated' AND r.seated_at IS NOT NULL
-                            THEN r.seated_at ELSE r.reservation_at END,
-                       '+' || r.duration_minutes || ' minutes') > datetime(?)
+          AND (CASE WHEN r.status='seated' AND r.seated_at IS NOT NULL
+                    THEN r.seated_at ELSE r.reservation_at END)::timestamp < ?::timestamp
+          AND (CASE WHEN r.status='seated' AND r.seated_at IS NOT NULL
+                    THEN r.seated_at ELSE r.reservation_at END)::timestamp
+                + make_interval(mins => r.duration_minutes) > ?::timestamp
           {exclude_sql}
         LIMIT 1
     """, params).fetchone()
@@ -835,7 +857,7 @@ def generate_slots(date_str: str, party_size: int):
         if current >= now + timedelta(minutes=min_notice):
             conn = db()
             slot_end = current + timedelta(minutes=SLOT_MINUTES)
-            booked = conn.execute("SELECT COALESCE(SUM(party_size),0) n FROM reservations WHERE status NOT IN ('cancelled','no_show') AND datetime(reservation_at)>=datetime(?) AND datetime(reservation_at)<datetime(?)", (current.isoformat(timespec='minutes'), slot_end.isoformat(timespec='minutes'))).fetchone()["n"]
+            booked = conn.execute("SELECT COALESCE(SUM(party_size),0) n FROM reservations WHERE status NOT IN ('cancelled','no_show') AND reservation_at::timestamp>=?::timestamp AND reservation_at::timestamp<?::timestamp", (current.isoformat(timespec='minutes'), slot_end.isoformat(timespec='minutes'))).fetchone()["n"]
             conn.close()
             if booked + party_size <= max_covers and available_tables(current, party_size):
                 slots.append(current)
@@ -895,7 +917,10 @@ def settings_page():
                 if value: conn.execute("INSERT INTO app_settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(key,value))
             conn.commit(); audit("update_settings", "settings")
         elif action=="closure":
-            conn.execute("INSERT OR REPLACE INTO closures(closure_date,area,reason) VALUES (?,?,?)",(request.form.get("closure_date"),request.form.get("area","All"),request.form.get("reason","")))
+            conn.execute("""
+                INSERT INTO closures(closure_date,area,reason) VALUES (?,?,?)
+                ON CONFLICT(closure_date,area) DO UPDATE SET reason=excluded.reason
+            """,(request.form.get("closure_date"),request.form.get("area","All"),request.form.get("reason","")))
             conn.commit(); audit("add_closure", "closure", request.form.get("closure_date"))
         elif action=="delete_closure":
             conn.execute("DELETE FROM closures WHERE id=?",(request.form.get("closure_id"),)); conn.commit(); audit("delete_closure","closure",request.form.get("closure_id"))
@@ -913,7 +938,7 @@ def add_staff_user():
     if not username or len(password)<10 or role not in {"manager","host","server"}: flash("Use a username and a password of at least 10 characters.","error"); return redirect(url_for("settings_page"))
     conn=db()
     try: conn.execute("INSERT INTO staff_users(username,password_hash,role,created_at) VALUES (?,?,?,?)",(username,generate_password_hash(password),role,datetime.now().isoformat(timespec="seconds"))); conn.commit(); audit("create_staff","staff_user",username,{"role":role})
-    except sqlite3.IntegrityError: flash("That username already exists.","error")
+    except psycopg2.IntegrityError: conn.rollback(); flash("That username already exists.","error")
     finally: conn.close()
     return redirect(url_for("settings_page"))
 
@@ -922,8 +947,8 @@ def add_staff_user():
 @role_required("manager","host")
 def export_reservations():
     date_from=request.args.get("from","2000-01-01"); date_to=request.args.get("to","2100-01-01")
-    conn=db(); rows=conn.execute("SELECT id,guest_name,email,phone,party_size,reservation_at,status,occasion,notes,created_at FROM reservations WHERE date(reservation_at) BETWEEN date(?) AND date(?) ORDER BY reservation_at",(date_from,date_to)).fetchall(); conn.close()
-    out=io.StringIO(); writer=csv.writer(out); writer.writerow(rows[0].keys() if rows else ["id","guest_name","email","phone","party_size","reservation_at","status","occasion","notes","created_at"]); writer.writerows([tuple(r) for r in rows]); audit("export_reservations","reservation","",{"from":date_from,"to":date_to,"count":len(rows)})
+    conn=db(); rows=conn.execute("SELECT id,guest_name,email,phone,party_size,reservation_at,status,occasion,notes,created_at FROM reservations WHERE reservation_at::date BETWEEN ?::date AND ?::date ORDER BY reservation_at",(date_from,date_to)).fetchall(); conn.close()
+    out=io.StringIO(); writer=csv.writer(out); writer.writerow(rows[0].keys() if rows else ["id","guest_name","email","phone","party_size","reservation_at","status","occasion","notes","created_at"]); writer.writerows([list(r.values()) for r in rows]); audit("export_reservations","reservation","",{"from":date_from,"to":date_to,"count":len(rows)})
     return Response(out.getvalue(), mimetype="text/csv", headers={"Content-Disposition":"attachment; filename=siena-reservations.csv"})
 
 
@@ -983,7 +1008,7 @@ def book():
 
     conn = db()
     try:
-        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("SELECT pg_advisory_xact_lock(?)", (BOOKING_LOCK_KEY,))
         tables = available_tables(reservation_at, party_size)
         if not tables:
             conn.rollback(); conn.close()
@@ -1009,7 +1034,7 @@ def book():
             [(reservation_id, table_id) for table_id in chosen["table_ids"]]
         )
         conn.commit()
-    except sqlite3.OperationalError:
+    except (psycopg2.OperationalError, psycopg2.IntegrityError):
         conn.rollback(); conn.close(); flash("Another booking was completed at the same time. Please select another slot.", "error"); return redirect(url_for("index"))
     reservation = conn.execute(
         "SELECT * FROM reservations WHERE id = ?", (reservation_id,)
@@ -1145,8 +1170,8 @@ def guest_manage(token):
                     WHERE r.table_id = t.id
                       AND r.id != ?
                       AND r.status IN ('confirmed','seated','walk_in')
-                      AND datetime(r.reservation_at) < datetime(?)
-                      AND datetime(r.reservation_at, '+' || r.duration_minutes || ' minutes') > datetime(?)
+                      AND r.reservation_at::timestamp < ?::timestamp
+                      AND r.reservation_at::timestamp + make_interval(mins => r.duration_minutes) > ?::timestamp
                   )
                 ORDER BY t.capacity, t.id
                 LIMIT 1
@@ -1253,10 +1278,10 @@ def floorplan_data():
             JOIN reservation_tables rt ON rt.reservation_id = r.id
             WHERE rt.table_id = ?
               AND r.status IN ('confirmed','seated')
-              AND datetime(CASE WHEN r.status='seated' AND seated_at IS NOT NULL THEN r.seated_at ELSE r.reservation_at END) <= datetime(?)
-              AND datetime(CASE WHEN r.status='seated' AND seated_at IS NOT NULL THEN r.seated_at ELSE r.reservation_at END,
-                           '+' || r.duration_minutes || ' minutes') > datetime(?)
-            ORDER BY datetime(r.reservation_at)
+              AND (CASE WHEN r.status='seated' AND seated_at IS NOT NULL THEN r.seated_at ELSE r.reservation_at END)::timestamp <= ?::timestamp
+              AND (CASE WHEN r.status='seated' AND seated_at IS NOT NULL THEN r.seated_at ELSE r.reservation_at END)::timestamp
+                    + make_interval(mins => r.duration_minutes) > ?::timestamp
+            ORDER BY r.reservation_at::timestamp
             LIMIT 1
         """, (table["id"], at.isoformat(timespec="minutes"), at.isoformat(timespec="minutes"))).fetchone()
 
@@ -1274,7 +1299,7 @@ def floorplan_data():
 
     combinations = conn.execute("""
         SELECT c.id, c.name, c.capacity,
-               GROUP_CONCAT(t.name, ', ') AS members
+               string_agg(t.name, ', ') AS members
         FROM table_combinations c
         JOIN table_combination_members m ON m.combination_id = c.id
         JOIN restaurant_tables t ON t.id = m.table_id
@@ -1309,10 +1334,10 @@ def seat_candidates():
                r.phone, r.occasion, r.table_id, t.name AS table_name
         FROM reservations r
         LEFT JOIN restaurant_tables t ON t.id = r.table_id
-        WHERE date(r.reservation_at) = date(?)
+        WHERE r.reservation_at::date = ?::date
           AND r.status = 'confirmed'
-        ORDER BY ABS(strftime('%s', r.reservation_at) - strftime('%s', ?)),
-                 datetime(r.reservation_at)
+        ORDER BY ABS(EXTRACT(EPOCH FROM r.reservation_at::timestamp) - EXTRACT(EPOCH FROM ?::timestamp)),
+                 r.reservation_at::timestamp
     """, (day, at.isoformat(timespec="minutes"))).fetchall()
     conn.close()
     return jsonify({"reservations": [dict(r) for r in rows]})
@@ -1534,8 +1559,8 @@ def edit_reservation(reservation_id):
                         WHERE table_id = ?
                           AND id != ?
                           AND status IN ('confirmed','seated','walk_in')
-                          AND datetime(reservation_at) < datetime(?)
-                          AND datetime(reservation_at, '+' || r.duration_minutes || ' minutes') > datetime(?)
+                          AND reservation_at::timestamp < ?::timestamp
+                          AND reservation_at::timestamp + make_interval(mins => duration_minutes) > ?::timestamp
                         LIMIT 1
                     """, (
                         table_id, reservation_id,
@@ -1623,9 +1648,9 @@ def timeline():
         SELECT r.*, t.name AS table_name, t.area
         FROM reservations r
         LEFT JOIN restaurant_tables t ON t.id=r.table_id
-        WHERE date(r.reservation_at)=date(?)
+        WHERE r.reservation_at::date=?::date
           AND r.status NOT IN ('cancelled','no_show')
-        ORDER BY datetime(r.reservation_at), t.name
+        ORDER BY r.reservation_at::timestamp, t.name
     """, (date_str,)).fetchall()
     tables = conn.execute("""
         SELECT t.*, s.name AS server_name
@@ -1713,7 +1738,7 @@ def waitlist_page():
     items = conn.execute("""
         SELECT * FROM waitlist
         WHERE status IN ('waiting','notified')
-        ORDER BY datetime(joined_at)
+        ORDER BY joined_at
     """).fetchall()
     tables = conn.execute("""
         SELECT t.* FROM restaurant_tables t
@@ -1739,7 +1764,7 @@ def servers_page():
         if action == "add":
             name = request.form.get("name", "").strip()
             if name:
-                conn.execute("INSERT OR IGNORE INTO servers(name) VALUES (?)", (name,))
+                conn.execute("INSERT INTO servers(name) VALUES (?) ON CONFLICT(name) DO NOTHING", (name,))
         elif action == "assign":
             table_id = request.form.get("table_id", type=int)
             server_id = request.form.get("server_id", type=int)
@@ -1762,7 +1787,7 @@ def servers_page():
         FROM servers s
         LEFT JOIN restaurant_tables t ON t.server_id=s.id
         LEFT JOIN reservations r ON r.table_id=t.id
-          AND date(r.reservation_at)=date(?)
+          AND r.reservation_at::date=?::date
           AND r.status IN ('confirmed','seated','completed','walk_in')
         WHERE s.active=1
         GROUP BY s.id, s.name ORDER BY s.name
@@ -1796,7 +1821,7 @@ def guests_page():
         conn.close()
         return redirect(url_for("guests_page", pin=pin))
 
-    recent = conn.execute("SELECT * FROM reservations ORDER BY datetime(created_at) DESC").fetchall()
+    recent = conn.execute("SELECT * FROM reservations ORDER BY created_at DESC").fetchall()
     for r in recent:
         sync_guest_profile(conn, r)
     conn.commit()
@@ -1824,22 +1849,23 @@ def manager_overview():
                SUM(CASE WHEN status='seated' THEN 1 ELSE 0 END) seated,
                SUM(CASE WHEN status='confirmed' THEN 1 ELSE 0 END) upcoming,
                SUM(CASE WHEN status='no_show' THEN 1 ELSE 0 END) no_shows
-        FROM reservations WHERE date(reservation_at)=date(?)
+        FROM reservations WHERE reservation_at::date=?::date
     """, (date_str,)).fetchone()
     waiting = conn.execute("SELECT COUNT(*) n FROM waitlist WHERE status IN ('waiting','notified')").fetchone()["n"]
+    now_param = datetime.now().isoformat(timespec="minutes")
     overdue = conn.execute("""
         SELECT r.guest_name, r.party_size, r.seated_at, r.duration_minutes, t.name table_name
         FROM reservations r JOIN restaurant_tables t ON t.id=r.table_id
         WHERE r.status='seated'
-          AND datetime(r.seated_at, '+' || r.duration_minutes || ' minutes') < datetime('now','localtime')
-        ORDER BY datetime(r.seated_at)
-    """).fetchall()
+          AND r.seated_at::timestamp + make_interval(mins => r.duration_minutes) < ?::timestamp
+        ORDER BY r.seated_at::timestamp
+    """, (now_param,)).fetchall()
     upcoming_large = conn.execute("""
         SELECT r.*, t.name table_name FROM reservations r
         LEFT JOIN restaurant_tables t ON t.id=r.table_id
-        WHERE date(r.reservation_at)=date(?) AND r.party_size>=6
+        WHERE r.reservation_at::date=?::date AND r.party_size>=6
           AND r.status IN ('confirmed','seated')
-        ORDER BY datetime(r.reservation_at)
+        ORDER BY r.reservation_at::timestamp
     """, (date_str,)).fetchall()
     conn.close()
     return render_template("manager.html", stats=stats, waiting=waiting, overdue=overdue,
@@ -1865,7 +1891,7 @@ def marketing_page():
         sql = "SELECT * FROM guest_profiles WHERE marketing_opt_in=1 AND marketing_opt_out_at IS NULL AND phone IS NOT NULL AND phone != ''"
         params = []
         if audience == "vip": sql += " AND vip=1"
-        elif audience == "birthday": sql += " AND strftime('%m', birthday)=?"; params=[datetime.now().strftime('%m')]
+        elif audience == "birthday": sql += " AND to_char(birthday::date, 'MM')=?"; params=[datetime.now().strftime('%m')]
         recipients = conn.execute(sql, params).fetchall()
         sent = 0
         for guest in recipients:
@@ -1877,7 +1903,7 @@ def marketing_page():
         conn.commit(); conn.close()
         flash(f"Campaign sent to {sent} opted-in guests.", "success")
         return redirect(url_for("marketing_page", pin=pin))
-    campaigns = conn.execute("SELECT * FROM sms_campaigns ORDER BY datetime(created_at) DESC LIMIT 30").fetchall()
+    campaigns = conn.execute("SELECT * FROM sms_campaigns ORDER BY created_at DESC LIMIT 30").fetchall()
     opted_in = conn.execute("SELECT COUNT(*) n FROM guest_profiles WHERE marketing_opt_in=1 AND marketing_opt_out_at IS NULL").fetchone()["n"]
     conn.close()
     return render_template("marketing.html", campaigns=campaigns, opted_in=opted_in, pin=pin, app_name=APP_NAME)
@@ -1894,7 +1920,7 @@ def admin():
         SELECT r.*, t.name AS table_name, t.area
         FROM reservations r
         LEFT JOIN restaurant_tables t ON t.id = r.table_id
-        WHERE date(r.reservation_at) = date(?)
+        WHERE r.reservation_at::date = ?::date
     """
     params = [date_str]
     if status_filter != "all":
@@ -1904,15 +1930,15 @@ def admin():
         query += " AND (lower(r.guest_name) LIKE ? OR lower(r.phone) LIKE ? OR lower(r.email) LIKE ? OR lower(r.id) LIKE ?)"
         needle = f"%{search.lower()}%"
         params.extend([needle, needle, needle, needle])
-    query += " ORDER BY datetime(r.reservation_at)"
+    query += " ORDER BY r.reservation_at::timestamp"
 
     reservations = conn.execute(query, params).fetchall()
     all_day = conn.execute("""
         SELECT r.*, t.name AS table_name, t.area
         FROM reservations r
         LEFT JOIN restaurant_tables t ON t.id = r.table_id
-        WHERE date(r.reservation_at) = date(?)
-        ORDER BY datetime(r.reservation_at)
+        WHERE r.reservation_at::date = ?::date
+        ORDER BY r.reservation_at::timestamp
     """, (date_str,)).fetchall()
     tables = conn.execute("SELECT * FROM restaurant_tables WHERE active=1 ORDER BY area, name").fetchall()
     area_counts = conn.execute("""
@@ -1920,7 +1946,7 @@ def admin():
                COUNT(DISTINCT t.id) AS table_count,
                SUM(CASE WHEN r.status IN ('confirmed','seated','walk_in') THEN 1 ELSE 0 END) AS occupied
         FROM restaurant_tables t
-        LEFT JOIN reservations r ON r.table_id=t.id AND date(r.reservation_at)=date(?)
+        LEFT JOIN reservations r ON r.table_id=t.id AND r.reservation_at::date=?::date
         WHERE t.active=1
         GROUP BY t.area
         ORDER BY t.area
