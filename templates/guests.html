@@ -1,14 +1,309 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="admin-shell"><div class="admin-heading"><div><p class="eyebrow">Guest CRM</p><h1>Guest Profiles</h1></div>
-<form><input type="hidden" name="pin" value="{{ pin }}"><input name="q" value="{{ q }}" placeholder="Search guests"><button>Search</button></form></div>
-<div class="guest-grid">{% for g in guests %}<form method="post" class="panel guest-card"><input type="hidden" name="pin" value="{{ pin }}"><input type="hidden" name="profile_id" value="{{ g.id }}">
-<div class="guest-card-head"><div><h2>{{ g.guest_name }}</h2><small>{{ g.visit_count }} completed visits · {{ g.phone }}</small></div><label class="vip-check"><input type="checkbox" name="vip" {% if g.vip %}checked{% endif %}> VIP</label></div>
-<label>Allergies<input name="allergies" value="{{ g.allergies or '' }}"></label>
-<label>Preferences<input name="preferences" value="{{ g.preferences or '' }}"></label>
-<label>Favorite table<input name="favorite_table" value="{{ g.favorite_table or '' }}"></label>
-<label>Preferred server<input name="preferred_server" value="{{ g.preferred_server or '' }}"></label>
-<label>Birthday<input type="date" name="birthday" value="{{ g.birthday or '' }}"></label>
-<label class="sms-consent"><input type="checkbox" name="marketing_opt_in" {% if g.marketing_opt_in %}checked{% endif %}> Marketing SMS opt-in</label>
-<button class="seat-action">Save Profile</button></form>{% else %}<p>No guest profiles yet.</p>{% endfor %}</div></section>
+<section class="admin-shell">
+  <div class="admin-heading">
+    <div><p class="eyebrow">Guest CRM</p><h1>Guest Profiles</h1></div>
+    <a class="outline-button" href="{{ url_for('export_guests_csv', pin=pin) }}">Export CSV</a>
+  </div>
+
+  <div class="panel crm-toolbar">
+    <input id="crm-search" type="search" placeholder="Search name, phone, or email" autocomplete="off">
+    <div class="crm-filters">
+      <label><input type="checkbox" id="filter-vip"> VIP only</label>
+      <label><input type="checkbox" id="filter-marketing"> Marketing SMS opt-in</label>
+      <label><input type="checkbox" id="filter-birthday"> Birthday this month</label>
+      <label><input type="checkbox" id="filter-allergies"> Has allergies</label>
+      <label><input type="checkbox" id="filter-preferences"> Has preferences</label>
+    </div>
+  </div>
+
+  <div class="panel crm-table-wrap">
+    <table class="crm-table">
+      <thead>
+        <tr>
+          <th data-sort="guest_name">Guest Name</th>
+          <th data-sort="phone">Phone</th>
+          <th data-sort="email">Email</th>
+          <th data-sort="visit_count">Total Visits</th>
+          <th data-sort="last_visit_at">Last Visit</th>
+          <th data-sort="vip">VIP</th>
+          <th data-sort="marketing_opt_in">Marketing SMS</th>
+          <th data-sort="birthday">Birthday</th>
+          <th data-sort="preferred_server">Preferred Server</th>
+          <th data-sort="favorite_table">Favorite Table</th>
+          <th>Status</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="crm-tbody">
+        <tr><td colspan="12" class="crm-loading">Loading guests…</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="crm-pagination">
+    <span id="crm-range" class="muted-copy"></span>
+    <div class="crm-pager">
+      <button id="crm-prev" type="button" class="secondary-action">Previous</button>
+      <span id="crm-pages"></span>
+      <button id="crm-next" type="button" class="secondary-action">Next</button>
+    </div>
+  </div>
+</section>
+
+<div id="crm-drawer" class="crm-drawer" aria-hidden="true">
+  <div class="crm-drawer-backdrop" id="crm-drawer-backdrop"></div>
+  <div class="crm-drawer-panel">
+    <div class="crm-drawer-head">
+      <h2 id="crm-drawer-title">Guest</h2>
+      <button type="button" class="dialog-close" id="crm-drawer-close">×</button>
+    </div>
+    <form id="crm-drawer-form">
+      <div class="crm-drawer-grid">
+        <label>Guest name<input id="crm-field-name" disabled></label>
+        <label>Phone<input id="crm-field-phone" disabled></label>
+        <label class="crm-wide">Email<input id="crm-field-email" disabled></label>
+        <label class="vip-check"><input type="checkbox" id="crm-field-vip"> VIP</label>
+        <label>Completed visits<input id="crm-field-visits" disabled></label>
+        <label>Birthday<input type="date" id="crm-field-birthday"></label>
+        <label class="crm-wide">Allergies<input id="crm-field-allergies"></label>
+        <label class="crm-wide">Preferences<input id="crm-field-preferences"></label>
+        <label>Favorite table<input id="crm-field-favorite-table"></label>
+        <label>Preferred server<input id="crm-field-preferred-server"></label>
+        <label class="sms-consent crm-wide"><input type="checkbox" id="crm-field-marketing"> Marketing SMS opt-in</label>
+      </div>
+
+      <h3>Recent Visits</h3>
+      <div id="crm-history" class="crm-history">Loading…</div>
+
+      <div class="crm-drawer-actions">
+        <button type="button" class="outline-button" id="crm-drawer-cancel">Cancel</button>
+        <button type="submit" class="primary-button" id="crm-drawer-save">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+const pin = {{ pin|tojson }};
+const state = { page: 1, pageSize: 25, search: '', sort: 'guest_name', direction: 'asc',
+                vip: false, marketing: false, birthday: false, allergies: false, preferences: false };
+let searchTimer = null;
+let currentGuests = [];
+
+function esc(value) {
+  return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function deriveStatus(g) {
+  if (g.marketing_opt_out_at) return 'Opted Out';
+  if (g.vip) return 'VIP';
+  if (Number(g.visit_count) > 0) return 'Active';
+  return 'New';
+}
+
+function formatDate(value) {
+  if (!value) return '—';
+  return String(value).slice(0, 10);
+}
+
+function buildQuery() {
+  const params = new URLSearchParams({
+    pin: pin || '',
+    page: state.page,
+    page_size: state.pageSize,
+    search: state.search,
+    sort: state.sort,
+    direction: state.direction,
+  });
+  if (state.vip) params.set('vip', '1');
+  if (state.marketing) params.set('marketing', '1');
+  if (state.birthday) params.set('birthday_month', '1');
+  if (state.allergies) params.set('allergies', '1');
+  if (state.preferences) params.set('preferences', '1');
+  return params.toString();
+}
+
+function rowHtml(g) {
+  const status = deriveStatus(g);
+  return `
+    <tr data-id="${g.id}" class="crm-row">
+      <td>${esc(g.guest_name)}</td>
+      <td>${esc(g.phone || '—')}</td>
+      <td>${esc(g.email || '—')}</td>
+      <td>${esc(g.visit_count ?? 0)}</td>
+      <td>${formatDate(g.last_visit_at)}</td>
+      <td>${g.vip ? '★ VIP' : ''}</td>
+      <td>${g.marketing_opt_in && !g.marketing_opt_out_at ? 'Opted in' : ''}</td>
+      <td>${formatDate(g.birthday)}</td>
+      <td>${esc(g.preferred_server || '—')}</td>
+      <td>${esc(g.favorite_table || '—')}</td>
+      <td><span class="crm-status crm-status-${status.toLowerCase().replace(' ', '-')}">${status}</span></td>
+      <td class="crm-actions">
+        <button type="button" class="small-action-button" data-action="view" data-id="${g.id}">View</button>
+        <button type="button" class="small-action-button" data-action="edit" data-id="${g.id}">Edit</button>
+      </td>
+    </tr>`;
+}
+
+async function loadGuests() {
+  const tbody = document.getElementById('crm-tbody');
+  tbody.innerHTML = '<tr><td colspan="12" class="crm-loading">Loading guests…</td></tr>';
+  const response = await fetch(`/api/guests?${buildQuery()}`);
+  const data = await response.json();
+  currentGuests = data.items || [];
+
+  if (!currentGuests.length) {
+    tbody.innerHTML = '<tr><td colspan="12" class="empty-state">No guests match your search and filters.</td></tr>';
+  } else {
+    tbody.innerHTML = currentGuests.map(rowHtml).join('');
+  }
+
+  const total = data.total || 0;
+  const pageSize = data.page_size || state.pageSize;
+  const page = data.page || state.page;
+  const start = total === 0 ? 0 : (page - 1) * pageSize + 1;
+  const end = Math.min(total, page * pageSize);
+  document.getElementById('crm-range').textContent = `Showing ${start}–${end} of ${total.toLocaleString()} guests`;
+
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  document.getElementById('crm-pages').textContent = `Page ${page} of ${totalPages}`;
+  document.getElementById('crm-prev').disabled = page <= 1;
+  document.getElementById('crm-next').disabled = page >= totalPages;
+
+  document.querySelectorAll('.crm-table th[data-sort]').forEach(th => {
+    th.classList.toggle('sorted', th.dataset.sort === state.sort);
+    th.classList.toggle('sorted-desc', th.dataset.sort === state.sort && state.direction === 'desc');
+  });
+}
+
+document.getElementById('crm-search').addEventListener('input', (e) => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    state.search = e.target.value.trim();
+    state.page = 1;
+    loadGuests();
+  }, 300);
+});
+
+[['filter-vip','vip'], ['filter-marketing','marketing'], ['filter-birthday','birthday'],
+ ['filter-allergies','allergies'], ['filter-preferences','preferences']].forEach(([id, key]) => {
+  document.getElementById(id).addEventListener('change', (e) => {
+    state[key] = e.target.checked;
+    state.page = 1;
+    loadGuests();
+  });
+});
+
+document.querySelectorAll('.crm-table th[data-sort]').forEach(th => {
+  th.addEventListener('click', () => {
+    const col = th.dataset.sort;
+    if (state.sort === col) {
+      state.direction = state.direction === 'asc' ? 'desc' : 'asc';
+    } else {
+      state.sort = col;
+      state.direction = 'asc';
+    }
+    state.page = 1;
+    loadGuests();
+  });
+});
+
+document.getElementById('crm-prev').addEventListener('click', () => { state.page = Math.max(1, state.page - 1); loadGuests(); });
+document.getElementById('crm-next').addEventListener('click', () => { state.page += 1; loadGuests(); });
+
+document.getElementById('crm-tbody').addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-action]');
+  if (btn) { openDrawer(btn.dataset.id); return; }
+  const row = e.target.closest('tr[data-id]');
+  if (row) openDrawer(row.dataset.id);
+});
+
+const drawer = document.getElementById('crm-drawer');
+let drawerGuestId = null;
+
+async function openDrawer(id) {
+  drawerGuestId = id;
+  drawer.classList.add('open');
+  drawer.setAttribute('aria-hidden', 'false');
+  document.getElementById('crm-drawer-title').textContent = 'Loading…';
+  document.getElementById('crm-history').innerHTML = 'Loading…';
+
+  const response = await fetch(`/api/guests/${id}?pin=${encodeURIComponent(pin || '')}`);
+  const data = await response.json();
+  if (!response.ok) {
+    alert(data.error || 'Unable to load guest.');
+    closeDrawer();
+    return;
+  }
+  const g = data.guest;
+  document.getElementById('crm-drawer-title').textContent = g.guest_name;
+  document.getElementById('crm-field-name').value = g.guest_name || '';
+  document.getElementById('crm-field-phone').value = g.phone || '';
+  document.getElementById('crm-field-email').value = g.email || '';
+  document.getElementById('crm-field-vip').checked = !!g.vip;
+  document.getElementById('crm-field-visits').value = g.visit_count ?? 0;
+  document.getElementById('crm-field-birthday').value = g.birthday || '';
+  document.getElementById('crm-field-allergies').value = g.allergies || '';
+  document.getElementById('crm-field-preferences').value = g.preferences || '';
+  document.getElementById('crm-field-favorite-table').value = g.favorite_table || '';
+  document.getElementById('crm-field-preferred-server').value = g.preferred_server || '';
+  document.getElementById('crm-field-marketing').checked = !!g.marketing_opt_in && !g.marketing_opt_out_at;
+
+  const history = data.history || [];
+  document.getElementById('crm-history').innerHTML = history.length
+    ? history.map(h => `<div class="crm-history-row"><span>${formatDate(h.reservation_at)} ${esc(String(h.reservation_at || '').slice(11,16))}</span><span>${esc(h.party_size)} guests</span><span class="crm-status crm-status-${esc(h.status)}">${esc(h.status.replace('_',' '))}</span></div>`).join('')
+    : '<p class="muted-copy">No reservation history yet.</p>';
+}
+
+function closeDrawer() {
+  drawer.classList.remove('open');
+  drawer.setAttribute('aria-hidden', 'true');
+  drawerGuestId = null;
+}
+
+document.getElementById('crm-drawer-close').addEventListener('click', closeDrawer);
+document.getElementById('crm-drawer-cancel').addEventListener('click', closeDrawer);
+document.getElementById('crm-drawer-backdrop').addEventListener('click', closeDrawer);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && drawer.classList.contains('open')) closeDrawer(); });
+
+document.getElementById('crm-drawer-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if (!drawerGuestId) return;
+  const body = new URLSearchParams({
+    pin: pin || '',
+    format: 'json',
+    profile_id: drawerGuestId,
+    allergies: document.getElementById('crm-field-allergies').value,
+    preferences: document.getElementById('crm-field-preferences').value,
+    favorite_table: document.getElementById('crm-field-favorite-table').value,
+    preferred_server: document.getElementById('crm-field-preferred-server').value,
+    birthday: document.getElementById('crm-field-birthday').value,
+  });
+  if (document.getElementById('crm-field-vip').checked) body.set('vip', '1');
+  if (document.getElementById('crm-field-marketing').checked) body.set('marketing_opt_in', '1');
+
+  const response = await fetch('/guests', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body,
+  });
+  const data = await response.json();
+  if (!response.ok || !data.ok) {
+    alert((data && data.error) || 'Unable to save guest.');
+    return;
+  }
+
+  // Refresh only the updated row in place -- no full reload or re-fetch.
+  const idx = currentGuests.findIndex(g => String(g.id) === String(drawerGuestId));
+  if (idx !== -1) {
+    currentGuests[idx] = data.guest;
+    const row = document.querySelector(`tr[data-id="${drawerGuestId}"]`);
+    if (row) row.outerHTML = rowHtml(data.guest);
+  }
+  closeDrawer();
+});
+
+loadGuests();
+</script>
 {% endblock %}

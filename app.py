@@ -2099,24 +2099,129 @@ def guests_page():
               1 if request.form.get("marketing_opt_in") else 0,
               profile_id))
         conn.commit()
+        # The CRM drawer saves via fetch() and expects JSON back so it can
+        # refresh just the one row; the field-editing SQL above is unchanged
+        # and still reused by both callers.
+        if request.form.get("format") == "json":
+            updated = conn.execute("SELECT * FROM guest_profiles WHERE id=?", (profile_id,)).fetchone()
+            conn.close()
+            if not updated:
+                return jsonify({"ok": False, "error": "Guest not found."}), 404
+            return jsonify({"ok": True, "guest": dict(updated)})
         conn.close()
         return redirect(url_for("guests_page", pin=pin))
 
+    # Bulk-sync stays triggered by a page visit, same as before the CRM
+    # redesign -- the new /api/guests list endpoint deliberately does NOT run
+    # this on every search/sort/page request, since that would turn an
+    # already-expensive full-reservation-table scan into something firing on
+    # every keystroke. See summary notes on this being a pre-existing,
+    # separately-scoped performance concern at real scale.
     recent = conn.execute("SELECT * FROM reservations ORDER BY created_at DESC").fetchall()
     for r in recent:
         sync_guest_profile(conn, r)
     conn.commit()
-    q = request.args.get("q", "").strip()
-    sql = "SELECT * FROM guest_profiles"
-    params = []
-    if q:
-        sql += " WHERE lower(guest_name) LIKE ? OR lower(COALESCE(email,'')) LIKE ? OR COALESCE(phone,'') LIKE ?"
-        needle = f"%{q.lower()}%"
-        params = [needle, needle, needle]
-    sql += " ORDER BY vip DESC, visit_count DESC, guest_name"
-    guests = conn.execute(sql, params).fetchall()
     conn.close()
-    return render_template("guests.html", guests=guests, q=q, pin=pin, app_name=APP_NAME)
+    return render_template("guests.html", pin=pin, app_name=APP_NAME)
+
+
+@app.get("/api/guests")
+def api_guests():
+    """Server-side paginated/searchable/sortable/filterable guest list, backing
+    the CRM table. Never loads more than one page of guest_profiles at a time,
+    regardless of how many thousands of guests exist."""
+    require_admin()
+    page = max(1, request.args.get("page", 1, type=int))
+    page_size = request.args.get("page_size", 25, type=int) or 25
+    page_size = max(1, min(page_size, 100))
+    search = request.args.get("search", "").strip()
+
+    sortable = {
+        "guest_name": "guest_name", "phone": "phone", "email": "email",
+        "visit_count": "visit_count", "last_visit_at": "last_visit_at",
+        "vip": "vip", "marketing_opt_in": "marketing_opt_in", "birthday": "birthday",
+        "preferred_server": "preferred_server", "favorite_table": "favorite_table",
+    }
+    sort_col = sortable.get(request.args.get("sort", "guest_name"), "guest_name")
+    direction = "DESC" if request.args.get("direction", "asc").lower() == "desc" else "ASC"
+
+    where = []
+    params = []
+    if search:
+        where.append("(lower(guest_name) LIKE ? OR lower(COALESCE(email,'')) LIKE ? OR COALESCE(phone,'') LIKE ?)")
+        needle = f"%{search.lower()}%"
+        params.extend([needle, needle, needle])
+    if request.args.get("vip") == "1":
+        where.append("vip = 1")
+    if request.args.get("marketing") == "1":
+        where.append("marketing_opt_in = 1 AND marketing_opt_out_at IS NULL")
+    if request.args.get("birthday_month") == "1":
+        where.append("birthday IS NOT NULL AND birthday != '' AND to_char(birthday::date, 'MM') = ?")
+        params.append(datetime.now().strftime("%m"))
+    if request.args.get("allergies") == "1":
+        where.append("allergies IS NOT NULL AND allergies != ''")
+    if request.args.get("preferences") == "1":
+        where.append("preferences IS NOT NULL AND preferences != ''")
+    where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+
+    conn = db()
+    total = conn.execute(f"SELECT COUNT(*) n FROM guest_profiles {where_sql}", params).fetchone()["n"]
+    offset = (page - 1) * page_size
+    rows = conn.execute(f"""
+        SELECT * FROM guest_profiles {where_sql}
+        ORDER BY {sort_col} {direction} NULLS LAST, guest_name ASC
+        LIMIT ? OFFSET ?
+    """, params + [page_size, offset]).fetchall()
+    conn.close()
+
+    return jsonify({
+        "items": [dict(r) for r in rows],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    })
+
+
+@app.get("/api/guests/<int:profile_id>")
+def api_guest_detail(profile_id):
+    """Full profile plus recent reservation history, for the CRM drawer."""
+    require_admin()
+    conn = db()
+    guest = conn.execute("SELECT * FROM guest_profiles WHERE id=?", (profile_id,)).fetchone()
+    if not guest:
+        conn.close()
+        return jsonify({"error": "Guest not found."}), 404
+    history = conn.execute("""
+        SELECT id, reservation_at, party_size, status, occasion, table_id
+        FROM reservations
+        WHERE lower(COALESCE(email,''))=? AND COALESCE(phone,'')=?
+        ORDER BY reservation_at DESC
+        LIMIT 20
+    """, ((guest["email"] or "").lower(), guest["phone"] or "")).fetchall()
+    conn.close()
+    return jsonify({"guest": dict(guest), "history": [dict(h) for h in history]})
+
+
+@app.get("/guests/export.csv")
+def export_guests_csv():
+    require_admin()
+    conn = db()
+    rows = conn.execute("""
+        SELECT guest_name, email, phone, visit_count, last_visit_at, vip,
+               marketing_opt_in, birthday, preferred_server, favorite_table,
+               allergies, preferences
+        FROM guest_profiles ORDER BY guest_name
+    """).fetchall()
+    conn.close()
+    out = io.StringIO()
+    writer = csv.writer(out)
+    writer.writerow(rows[0].keys() if rows else [
+        "guest_name","email","phone","visit_count","last_visit_at","vip",
+        "marketing_opt_in","birthday","preferred_server","favorite_table","allergies","preferences"
+    ])
+    writer.writerows([list(r.values()) for r in rows])
+    return Response(out.getvalue(), mimetype="text/csv",
+                     headers={"Content-Disposition": "attachment; filename=siena-guests.csv"})
 
 
 @app.get("/manager")
