@@ -132,7 +132,7 @@ small{color:var(--muted)}
 .form-grid{display:grid;gap:12px}.form-grid h2{margin-bottom:4px}
 .wait-actions{display:flex;gap:8px;align-items:center}.wait-actions select{min-width:180px}
 .wait-actions button{width:auto;padding:9px 12px}
-.vip-check{display:flex;align-items:center;gap:6px}
+.vip-check{display:flex;align-items:center;gap:6px}.vip-check input{width:auto!important}
 .timeline-wrap{overflow:auto;border:1px solid var(--line);border-radius:14px;background:#fff}
 .timeline-head,.timeline-row{display:grid;grid-template-columns:150px repeat(13,110px);min-width:1580px}
 .timeline-head{position:sticky;top:0;z-index:2;background:var(--cream);font-weight:700}
