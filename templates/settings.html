@@ -1,1 +1,84 @@
-{% extends "base.html" %}{% block content %}<section class="admin-shell"><div class="admin-heading"><div><p class="eyebrow">Production controls</p><h1>Restaurant Settings</h1></div><a href="{{ url_for('export_reservations') }}">Export CSV</a></div><div class="ops-grid"><form method="post" class="panel form-grid"><input type="hidden" name="action" value="settings"><h2>Availability & pacing</h2>{% for key,label in [('open_hour','Opening hour (24h)'),('close_hour','Closing hour (24h)'),('max_covers_per_slot','Maximum covers per slot'),('min_notice_minutes','Minimum advance notice'),('booking_window_days','Booking window in days'),('late_hold_minutes','Late arrival hold'),('same_day_cutoff_minutes','Same-day cutoff')] %}<label>{{ label }}<input type="number" name="{{ key }}" value="{{ settings.get(key,'') }}" required></label>{% endfor %}<button class="seat-action">Save Settings</button></form><section class="panel"><h2>Closures</h2><form method="post" class="form-grid"><input type="hidden" name="action" value="closure"><label>Date<input type="date" name="closure_date" required></label><label>Area<select name="area"><option>All</option><option>Main Dining</option><option>Covered Patio</option><option>Bar</option></select></label><label>Reason<input name="reason"></label><button class="seat-action">Block Date</button></form>{% for c in closures %}<form method="post" class="ops-row"><input type="hidden" name="action" value="delete_closure"><input type="hidden" name="closure_id" value="{{ c.id }}"><div><strong>{{ c.closure_date }} · {{ c.area }}</strong><small>{{ c.reason }}</small></div><button class="secondary-action">Remove</button></form>{% endfor %}</section></div><div class="ops-grid"><form method="post" action="{{ url_for('add_staff_user') }}" class="panel form-grid"><h2>Add staff account</h2><label>Username<input name="username" required></label><label>Password<input type="password" name="password" minlength="10" required></label><label>Role<select name="role"><option>host</option><option>server</option><option>manager</option></select></label><button class="seat-action">Create Account</button></form><section class="panel"><h2>Staff accounts</h2>{% for u in users %}<div class="ops-row"><div><strong>{{ u.username }}</strong><small>{{ u.role }} · last login {{ u.last_login_at or 'Never' }}</small></div></div>{% endfor %}</section></div></section>{% endblock %}
+{% extends "base.html" %}
+{% block content %}
+<section class="admin-shell">
+  <div class="admin-heading">
+    <div><p class="eyebrow">Production controls</p><h1>Restaurant Settings</h1></div>
+    <a href="{{ url_for('export_reservations') }}">Export CSV</a>
+  </div>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}<div class="flash {{ category }}">{{ message }}</div>{% endfor %}
+  {% endwith %}
+
+  <div class="ops-grid">
+    <form method="post" class="panel form-grid" id="hours-form">
+      <input type="hidden" name="action" value="settings">
+      <input type="hidden" name="confirm_hours" value="0">
+
+      <h2>Operating Hours</h2>
+      <label>Opening time (24h)
+        <input type="number" name="open_hour" min="0" max="23" value="{{ settings.get('open_hour','') }}" data-original="{{ settings.get('open_hour','') }}" required>
+      </label>
+      <label>Closing time (24h)
+        <input type="number" name="close_hour" min="0" max="23" value="{{ settings.get('close_hour','') }}" data-original="{{ settings.get('close_hour','') }}" required>
+      </label>
+      <p class="muted-copy">Changes apply immediately to new bookings and the Timeline — no restart needed. Existing reservations are never modified automatically; any that fall outside new hours are flagged, not changed.</p>
+
+      <h2>Availability &amp; pacing</h2>
+      {% for key,label in [('max_covers_per_slot','Maximum covers per slot'),('min_notice_minutes','Minimum advance notice (minutes)'),('booking_window_days','Booking window (days)'),('late_hold_minutes','Late-arrival hold before auto no-show (minutes)'),('same_day_cutoff_minutes','Same-day booking cutoff (minutes before slot)')] %}
+      <label>{{ label }}<input type="number" name="{{ key }}" value="{{ settings.get(key,'') }}" required></label>
+      {% endfor %}
+
+      <button class="seat-action">Save Settings</button>
+    </form>
+
+    <section class="panel"><h2>Closures</h2><form method="post" class="form-grid"><input type="hidden" name="action" value="closure"><label>Date<input type="date" name="closure_date" required></label><label>Area<select name="area"><option>All</option><option>Main Dining</option><option>Covered Patio</option><option>Bar</option></select></label><label>Reason<input name="reason"></label><button class="seat-action">Block Date</button></form>{% for c in closures %}<form method="post" class="ops-row"><input type="hidden" name="action" value="delete_closure"><input type="hidden" name="closure_id" value="{{ c.id }}"><div><strong>{{ c.closure_date }} · {{ c.area }}</strong><small>{{ c.reason }}</small></div><button class="secondary-action">Remove</button></form>{% endfor %}</section>
+  </div>
+
+  <div class="ops-grid">
+    <form method="post" action="{{ url_for('add_staff_user') }}" class="panel form-grid"><h2>Add staff account</h2><label>Username<input name="username" required></label><label>Password<input type="password" name="password" minlength="10" required></label><label>Role<select name="role"><option>host</option><option>server</option><option>manager</option></select></label><button class="seat-action">Create Account</button></form>
+    <section class="panel"><h2>Staff accounts</h2>{% for u in users %}<div class="ops-row"><div><strong>{{ u.username }}</strong><small>{{ u.role }} · last login {{ u.last_login_at or 'Never' }}</small></div></div>{% endfor %}</section>
+  </div>
+</section>
+
+<script>
+// Warn before saving operating-hours changes that would leave existing
+// reservations outside the new window. A native confirm() dialog, backed by
+// a live count from /settings/hours-impact. Falls through to a normal submit
+// if the check itself fails, so a network hiccup never blocks saving.
+(function () {
+  const form = document.getElementById('hours-form');
+  if (!form) return;
+  const confirmField = form.querySelector('[name="confirm_hours"]');
+
+  form.addEventListener('submit', async function (e) {
+    if (confirmField.value === '1') return; // already confirmed, let it through
+
+    const openInput = form.querySelector('[name="open_hour"]');
+    const closeInput = form.querySelector('[name="close_hour"]');
+    const openHour = openInput.value;
+    const closeHour = closeInput.value;
+    if (!openHour || !closeHour) return; // let server-side validation handle it
+
+    // Only check impact when hours are actually changing -- avoids a pointless
+    // confirm() popup on every settings save when only pacing fields changed.
+    if (openHour === openInput.dataset.original && closeHour === closeInput.dataset.original) return;
+
+    e.preventDefault();
+    try {
+      const res = await fetch(`/settings/hours-impact?open_hour=${encodeURIComponent(openHour)}&close_hour=${encodeURIComponent(closeHour)}`);
+      const data = await res.json();
+      if (data.count && data.count > 0) {
+        const ok = confirm(`Changing operating hours will leave ${data.count} existing reservation(s) outside the new schedule. Continue?`);
+        if (!ok) return;
+      }
+    } catch (err) {
+      // Impact check failed (e.g. offline) -- fall through to normal submit;
+      // server-side validation still guards against bad hour values.
+    }
+    confirmField.value = '1';
+    form.submit();
+  });
+})();
+</script>
+{% endblock %}

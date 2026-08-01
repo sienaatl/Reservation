@@ -65,7 +65,7 @@ async function loadFloor(keepDetails = false) {
 
   data.tables.forEach(t => {
     const el = document.createElement('button');
-    el.className = `floor-table ${t.shape} ${t.display_status} ${t.reservation?.timer_state || ''}`;
+    el.className = `floor-table ${t.shape} ${t.display_status} ${t.reservation?.timer_state || ''} ${t.reservation?.outside_hours ? 'outside-hours' : ''}`;
     el.style.left = `${t.x}%`;
     el.style.top = `${t.y}%`;
     el.style.width = `${t.width}%`;
@@ -92,6 +92,7 @@ async function showDetails(t) {
   if (t.reservation) {
     details.innerHTML = `
       <div class="status-pill ${esc(t.display_status)}">${esc(t.display_status)}</div>
+      ${t.reservation.outside_hours ? `<div class="status-pill outside-hours">⚠ Outside Operating Hours</div>` : ''}
       <h3>Table ${esc(t.name)}</h3>
       <dl>
         <dt>Guest</dt><dd>${esc(t.reservation.guest_name)}</dd>

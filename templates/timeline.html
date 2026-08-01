@@ -5,6 +5,6 @@
 <div class="timeline-wrap"><div class="timeline-head"><div>Table</div>{% for slot in slots %}<div>{{ slot }}</div>{% endfor %}</div>
 {% for t in tables %}<div class="timeline-row"><div class="timeline-table"><strong>{{ t.name }}</strong><small>{{ t.area }}{% if t.server_name %} · {{ t.server_name }}{% endif %}</small></div>
 {% for slot in slots %}{% set ns=namespace(hit=None) %}{% for r in reservations if r.table_id==t.id and r.reservation_at[11:16]==slot %}{% set ns.hit=r %}{% endfor %}
-<div class="timeline-cell">{% if ns.hit %}<span class="timeline-booking {{ ns.hit.status }}" title="{{ ns.hit.guest_name }}">{{ ns.hit.guest_name.split(' ')[0] }} · {{ ns.hit.party_size }}</span>{% endif %}</div>{% endfor %}</div>{% endfor %}
+<div class="timeline-cell">{% if ns.hit %}<span class="timeline-booking {{ ns.hit.status }}{% if ns.hit.outside_hours %} outside-hours{% endif %}" title="{{ ns.hit.guest_name }}{% if ns.hit.outside_hours %} — outside operating hours{% endif %}">{% if ns.hit.outside_hours %}⚠ {% endif %}{{ ns.hit.guest_name.split(' ')[0] }} · {{ ns.hit.party_size }}</span>{% endif %}</div>{% endfor %}</div>{% endfor %}
 </div></section>
 {% endblock %}

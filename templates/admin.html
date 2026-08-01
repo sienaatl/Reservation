@@ -49,12 +49,13 @@
 
         <div class="reservation-list">
           {% for r in reservations %}
-          <article class="reservation-row status-{{ r.status }}">
+          <article class="reservation-row status-{{ r.status }}{% if r.outside_hours %} outside-hours{% endif %}">
             <div class="reservation-time">{{ r.reservation_at[11:16] }}</div>
             <div class="guest-block">
               <strong>{{ r.guest_name }}</strong>
               <span>{{ r.phone }} · {{ r.email }}</span>
               {% if r.occasion %}<small>{{ r.occasion }}</small>{% endif %}
+              {% if r.outside_hours %}<span class="hours-warning" title="This reservation is outside the current operating hours.">⚠ Outside Operating Hours</span>{% endif %}
             </div>
             <div class="party-block"><strong>{{ r.party_size }}</strong><span>guests</span></div>
             <form class="compact-form" method="post" action="{{ url_for('assign_reservation', reservation_id=r.id) }}">
