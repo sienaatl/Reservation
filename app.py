@@ -1460,6 +1460,67 @@ def seat_guest_at_table(table_id):
         conn.close()
         return jsonify({"error": "Only confirmed reservations can be seated."}), 400
 
+    # --- Bar seating: every Bar stool is a fixed capacity-1 seat, so a party of
+    # more than one guest can't fit a single stool. Instead of rejecting on
+    # capacity, auto-allocate enough free Bar stools (the tapped one plus more)
+    # to seat the whole party. Dining and Patio fall through untouched below.
+    if table["area"] == "Bar" and reservation["party_size"] > 1:
+        bar_tables = conn.execute(
+            "SELECT * FROM restaurant_tables WHERE area='Bar' AND active=1 ORDER BY id"
+        ).fetchall()
+
+        def _stool_taken(tid):
+            # A stool counts as occupied if it's another seated reservation's
+            # primary table_id, or one of its allocated reservation_tables rows
+            # (multi-stool Bar parties only show up via the latter).
+            return conn.execute("""
+                SELECT 1 FROM reservations r
+                WHERE r.status = 'seated' AND r.id != ? AND (
+                    r.table_id = ?
+                    OR EXISTS (SELECT 1 FROM reservation_tables rt
+                               WHERE rt.reservation_id = r.id AND rt.table_id = ?)
+                )
+                LIMIT 1
+            """, (reservation_id, tid, tid)).fetchone() is not None
+
+        free_stools = [bt for bt in bar_tables if not _stool_taken(bt["id"])]
+        free_ids = {bt["id"] for bt in free_stools}
+        if table_id not in free_ids:
+            conn.close()
+            return jsonify({"error": f"Table {table['name']} is no longer available."}), 409
+
+        others = [bt for bt in free_stools if bt["id"] != table_id]
+        needed_more = reservation["party_size"] - 1
+        if len(others) < needed_more:
+            conn.close()
+            return jsonify({
+                "error": (f"Not enough Bar seats available for this party of "
+                          f"{reservation['party_size']}. Only {len(free_stools)} Bar stool(s) are open.")
+            }), 409
+
+        chosen = [table] + others[:needed_more]
+        chosen_ids = [bt["id"] for bt in chosen]
+
+        duration = recommended_duration("Bar", reservation["party_size"], datetime.now())
+        conn.execute("""
+            UPDATE reservations
+            SET table_id = ?, status = 'seated', seated_at = ?, completed_at = NULL, duration_minutes = ?
+            WHERE id = ?
+        """, (table_id, datetime.now().isoformat(timespec="minutes"), duration, reservation_id))
+        # reservation_tables is the canonical record of every stool this party
+        # occupies, so the floor plan shows each one as occupied (see
+        # floorplan_data, which already reads occupancy through this table).
+        conn.execute("DELETE FROM reservation_tables WHERE reservation_id = ?", (reservation_id,))
+        conn.executemany(
+            "INSERT INTO reservation_tables(reservation_id, table_id) VALUES (?, ?)",
+            [(reservation_id, tid) for tid in chosen_ids]
+        )
+        conn.commit()
+        conn.close()
+        stool_names = ", ".join(bt["name"] for bt in chosen)
+        return jsonify({"ok": True, "message": f"Guest seated at Bar stools {stool_names}."})
+
+    # --- Unchanged path: Dining, Patio, and single-guest Bar seating.
     if table["capacity"] < reservation["party_size"]:
         conn.close()
         return jsonify({
@@ -1519,6 +1580,15 @@ def update_table_status(reservation_id):
         conn.execute("UPDATE reservations SET status=?, completed_at=? WHERE id=?",
                      (status, datetime.now().isoformat(timespec="minutes"), reservation_id))
     elif status == "confirmed":
+        # A Bar reservation may have multiple stools allocated via reservation_tables
+        # (see seat_guest_at_table). Release them all on revert so every stool
+        # becomes available again and this reservation can be freshly re-seated.
+        # Dining/Patio never write reservation_tables from the seating flow, so
+        # this is a no-op for them.
+        if reservation["table_id"]:
+            table = conn.execute("SELECT area FROM restaurant_tables WHERE id=?", (reservation["table_id"],)).fetchone()
+            if table and table["area"] == "Bar":
+                conn.execute("DELETE FROM reservation_tables WHERE reservation_id=?", (reservation_id,))
         conn.execute("UPDATE reservations SET status=?, seated_at=NULL, completed_at=NULL WHERE id=?", (status, reservation_id))
     else:
         conn.execute("UPDATE reservations SET status=? WHERE id=?", (status, reservation_id))
@@ -2076,6 +2146,15 @@ def update_status(reservation_id):
     if status not in allowed:
         abort(400)
     conn = db()
+    if status == "confirmed":
+        # Same Bar-stool release as update_table_status(): this dashboard dropdown
+        # is a second path that can also revert Seated -> Confirmed, so it needs
+        # the same reservation_tables cleanup to avoid stale stool assignments.
+        reservation = conn.execute("SELECT table_id FROM reservations WHERE id=?", (reservation_id,)).fetchone()
+        if reservation and reservation["table_id"]:
+            table = conn.execute("SELECT area FROM restaurant_tables WHERE id=?", (reservation["table_id"],)).fetchone()
+            if table and table["area"] == "Bar":
+                conn.execute("DELETE FROM reservation_tables WHERE reservation_id=?", (reservation_id,))
     conn.execute("UPDATE reservations SET status = ? WHERE id = ?", (status, reservation_id))
     conn.commit()
     conn.close()
