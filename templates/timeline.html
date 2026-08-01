@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 <section class="admin-shell"><div class="admin-heading"><div><p class="eyebrow">30-minute pacing</p><h1>Reservation Timeline</h1></div>
-<form><input type="hidden" name="pin" value="{{ pin }}"><input type="date" name="date" value="{{ date_str }}" onchange="this.form.submit()"></form></div>
+<form class="date-filter"><input type="hidden" name="pin" value="{{ pin }}"><input type="date" name="date" value="{{ date_str }}" onchange="this.form.submit()"></form></div>
 <div class="timeline-wrap"><div class="timeline-head"><div>Table</div>{% for slot in slots %}<div>{{ slot }}</div>{% endfor %}</div>
 {% for t in tables %}<div class="timeline-row"><div class="timeline-table"><strong>{{ t.name }}</strong><small>{{ t.area }}{% if t.server_name %} · {{ t.server_name }}{% endif %}</small></div>
 {% for slot in slots %}{% set ns=namespace(hit=None) %}{% for r in reservations if r.table_id==t.id and r.reservation_at[11:16]==slot %}{% set ns.hit=r %}{% endfor %}

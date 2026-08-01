@@ -2,7 +2,7 @@
 {% block content %}
 <section class="admin-shell">
   <div class="admin-heading"><div><p class="eyebrow">Live operations</p><h1>Manager Overview</h1></div>
-  <form><input type="hidden" name="pin" value="{{ pin }}"><input type="date" name="date" value="{{ date_str }}" onchange="this.form.submit()"></form></div>
+  <form class="date-filter"><input type="hidden" name="pin" value="{{ pin }}"><input type="date" name="date" value="{{ date_str }}" onchange="this.form.submit()"></form></div>
   <div class="stats-grid">
     <article><span>Covers</span><strong>{{ stats.covers }}</strong></article>
     <article><span>Bookings</span><strong>{{ stats.bookings }}</strong></article>
