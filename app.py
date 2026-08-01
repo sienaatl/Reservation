@@ -622,11 +622,30 @@ def process_sms_reminders(now: datetime | None = None) -> dict:
     return {"sent_24h": sent_24h, "sent_2h": sent_2h}
 
 
+def process_late_hold_no_shows(now: datetime | None = None) -> dict:
+    """late_hold_minutes: a confirmed reservation that's still unseated this
+    many minutes past its scheduled time is auto-marked no_show. Only ever
+    touches 'confirmed' reservations -- seated/walk_in/completed are untouched,
+    and this never cancels or moves a reservation, only flips its status."""
+    now = now or datetime.now()
+    late_hold = int(get_setting("late_hold_minutes", "15"))
+    conn = db()
+    rows = conn.execute("""
+        SELECT id FROM reservations
+        WHERE status = 'confirmed'
+          AND reservation_at::timestamp + make_interval(mins => ?) < ?::timestamp
+    """, (late_hold, now.isoformat(timespec="minutes"))).fetchall()
+    for r in rows:
+        conn.execute("UPDATE reservations SET status='no_show' WHERE id=?", (r["id"],))
+    conn.commit(); conn.close()
+    return {"late_hold_no_shows": len(rows)}
+
+
 @app.get("/tasks/send-sms-reminders")
 def sms_reminder_task():
     if not CRON_SECRET or request.args.get("secret") != CRON_SECRET:
         abort(403)
-    return jsonify({"ok": True, **process_sms_reminders()})
+    return jsonify({"ok": True, **process_sms_reminders(), **process_late_hold_no_shows()})
 
 
 @app.get("/reservation/<token>/running-late")
@@ -760,6 +779,25 @@ def get_setting(key: str, default=None):
     return row["value"] if row else default
 
 
+def count_reservations_outside_hours(open_hour: int, close_hour: int) -> int:
+    """Count upcoming, active reservations whose clock time would fall outside
+    the given operating hours. Used to warn admins before an hours change, and
+    shares its "outside hours" math with the badge queries in admin/timeline/
+    floorplan_data (kept inline there since each has a different table alias)."""
+    conn = db()
+    row = conn.execute("""
+        SELECT COUNT(*) n FROM reservations
+        WHERE status IN ('confirmed','seated','walk_in')
+          AND reservation_at::timestamp >= ?::timestamp
+          AND (
+            EXTRACT(HOUR FROM reservation_at::timestamp) + EXTRACT(MINUTE FROM reservation_at::timestamp)/60.0 < ?
+            OR EXTRACT(HOUR FROM reservation_at::timestamp) + EXTRACT(MINUTE FROM reservation_at::timestamp)/60.0 >= ?
+          )
+    """, (datetime.now().isoformat(timespec="minutes"), open_hour, close_hour)).fetchone()
+    conn.close()
+    return row["n"]
+
+
 def audit(action: str, entity_type: str = "", entity_id: str = "", details=None):
     username = session.get("staff_username", "system")
     conn = db()
@@ -861,6 +899,11 @@ def generate_slots(date_str: str, party_size: int):
     now = datetime.now()
     booking_window_days = int(get_setting("booking_window_days", "90"))
     min_notice = int(get_setting("min_notice_minutes", "60"))
+    # same_day_cutoff_minutes tightens (never loosens) the notice requirement
+    # specifically for bookings placed for today's date -- e.g. a kitchen may
+    # want more lead time for same-day covers than the general advance notice.
+    if date.date() == now.date():
+        min_notice = max(min_notice, int(get_setting("same_day_cutoff_minutes", "30")))
     if date.date() > (now + timedelta(days=booking_window_days)).date():
         return []
     conn = db()
@@ -925,6 +968,21 @@ def staff_logout():
     username=session.get("staff_username"); session.clear(); flash("You have been signed out.", "success"); return redirect(url_for("staff_login"))
 
 
+@app.get("/settings/hours-impact")
+@role_required("manager")
+def settings_hours_impact():
+    """Backs the confirm-before-save dialog on the Settings page: given a
+    proposed open/close hour, how many existing reservations would fall
+    outside that window."""
+    open_hour = request.args.get("open_hour", type=int)
+    close_hour = request.args.get("close_hour", type=int)
+    if (open_hour is None or close_hour is None
+            or not (0 <= open_hour <= 23) or not (0 <= close_hour <= 23)
+            or open_hour >= close_hour):
+        return jsonify({"error": "Invalid hours."}), 400
+    return jsonify({"count": count_reservations_outside_hours(open_hour, close_hour)})
+
+
 @app.route("/settings", methods=["GET", "POST"])
 @role_required("manager")
 def settings_page():
@@ -932,10 +990,46 @@ def settings_page():
     if request.method=="POST":
         action=request.form.get("action","settings")
         if action=="settings":
+            # Operating hours get dedicated validation and a confirm-before-save
+            # step, since changing them can leave existing reservations outside
+            # the new window (see count_reservations_outside_hours). The rest of
+            # the settings below still save through the generic loop.
+            open_hour_raw = request.form.get("open_hour","").strip()
+            close_hour_raw = request.form.get("close_hour","").strip()
+            confirm_hours = request.form.get("confirm_hours") == "1"
+
+            if not open_hour_raw or not close_hour_raw:
+                conn.close(); flash("Opening and closing times are required.", "error")
+                return redirect(url_for("settings_page"))
+            try:
+                open_hour, close_hour = int(open_hour_raw), int(close_hour_raw)
+            except ValueError:
+                conn.close(); flash("Opening and closing times must be whole hours (0-23).", "error")
+                return redirect(url_for("settings_page"))
+            if not (0 <= open_hour <= 23) or not (0 <= close_hour <= 23):
+                conn.close(); flash("Opening and closing times must be between 0 and 23.", "error")
+                return redirect(url_for("settings_page"))
+            if open_hour >= close_hour:
+                conn.close(); flash("Opening time must be before closing time.", "error")
+                return redirect(url_for("settings_page"))
+
+            hours_changed = (str(open_hour) != get_setting("open_hour","")) or (str(close_hour) != get_setting("close_hour",""))
+            if hours_changed and not confirm_hours:
+                affected = count_reservations_outside_hours(open_hour, close_hour)
+                if affected > 0:
+                    conn.close()
+                    flash(
+                        f"Changing operating hours would leave {affected} existing reservation(s) outside "
+                        f"the new schedule. Confirm on the page to save anyway, or adjust the hours.",
+                        "error"
+                    )
+                    return redirect(url_for("settings_page"))
+
             for key in ("open_hour","close_hour","max_covers_per_slot","min_notice_minutes","booking_window_days","late_hold_minutes","same_day_cutoff_minutes"):
                 value=request.form.get(key,"").strip()
                 if value: conn.execute("INSERT INTO app_settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(key,value))
             conn.commit(); audit("update_settings", "settings")
+            flash("Settings updated.", "success")
         elif action=="closure":
             conn.execute("""
                 INSERT INTO closures(closure_date,area,reason) VALUES (?,?,?)
@@ -1354,6 +1448,11 @@ def floorplan_data():
     except ValueError:
         return jsonify({"error": "Invalid date/time."}), 400
 
+    # Used to flag an occupied table's reservation as outside operating hours
+    # (display-only, see count_reservations_outside_hours for the same math).
+    open_hour = int(get_setting("open_hour", str(OPEN_HOUR)))
+    close_hour = int(get_setting("close_hour", str(CLOSE_HOUR)))
+
     conn = db()
     tables = conn.execute("""
         SELECT * FROM restaurant_tables
@@ -1365,7 +1464,9 @@ def floorplan_data():
     for table in tables:
         reservation = conn.execute("""
             SELECT id, guest_name, party_size, reservation_at, status, occasion, notes, phone,
-                   duration_minutes, seated_at, completed_at
+                   duration_minutes, seated_at, completed_at,
+                   (EXTRACT(HOUR FROM reservation_at::timestamp) + EXTRACT(MINUTE FROM reservation_at::timestamp)/60.0 < ?
+                    OR EXTRACT(HOUR FROM reservation_at::timestamp) + EXTRACT(MINUTE FROM reservation_at::timestamp)/60.0 >= ?) AS outside_hours
             FROM reservations r
             JOIN reservation_tables rt ON rt.reservation_id = r.id
             WHERE rt.table_id = ?
@@ -1375,7 +1476,7 @@ def floorplan_data():
                     + make_interval(mins => r.duration_minutes) > ?::timestamp
             ORDER BY r.reservation_at::timestamp
             LIMIT 1
-        """, (table["id"], at.isoformat(timespec="minutes"), at.isoformat(timespec="minutes"))).fetchone()
+        """, (open_hour, close_hour, table["id"], at.isoformat(timespec="minutes"), at.isoformat(timespec="minutes"))).fetchone()
 
         item = dict(table)
         item["reservation"] = dict(reservation) if reservation else None
@@ -1816,15 +1917,22 @@ def sync_guest_profile(conn, reservation):
 def timeline():
     require_admin()
     date_str = request.args.get("date") or datetime.now().strftime("%Y-%m-%d")
+    # Read live from app_settings, not the startup env vars -- previously this
+    # page kept showing the old hour range after a Settings change until the
+    # app restarted, even though booking availability already respected it.
+    open_hour = int(get_setting("open_hour", str(OPEN_HOUR)))
+    close_hour = int(get_setting("close_hour", str(CLOSE_HOUR)))
     conn = db()
     reservations = conn.execute("""
-        SELECT r.*, t.name AS table_name, t.area
+        SELECT r.*, t.name AS table_name, t.area,
+               (EXTRACT(HOUR FROM r.reservation_at::timestamp) + EXTRACT(MINUTE FROM r.reservation_at::timestamp)/60.0 < ?
+                OR EXTRACT(HOUR FROM r.reservation_at::timestamp) + EXTRACT(MINUTE FROM r.reservation_at::timestamp)/60.0 >= ?) AS outside_hours
         FROM reservations r
         LEFT JOIN restaurant_tables t ON t.id=r.table_id
         WHERE r.reservation_at::date=?::date
           AND r.status NOT IN ('cancelled','no_show')
         ORDER BY r.reservation_at::timestamp, t.name
-    """, (date_str,)).fetchall()
+    """, (open_hour, close_hour, date_str)).fetchall()
     tables = conn.execute("""
         SELECT t.*, s.name AS server_name
         FROM restaurant_tables t
@@ -1833,8 +1941,8 @@ def timeline():
     """).fetchall()
     conn.close()
 
-    start = datetime.strptime(date_str + f" {OPEN_HOUR:02d}:00", "%Y-%m-%d %H:%M")
-    slots = [(start + timedelta(minutes=30*i)).strftime("%H:%M") for i in range((CLOSE_HOUR-OPEN_HOUR)*2+1)]
+    start = datetime.strptime(date_str + f" {open_hour:02d}:00", "%Y-%m-%d %H:%M")
+    slots = [(start + timedelta(minutes=30*i)).strftime("%H:%M") for i in range((close_hour-open_hour)*2+1)]
     return render_template("timeline.html", reservations=reservations, tables=tables,
                            slots=slots, date_str=date_str, pin=request.args.get("pin"),
                            app_name=APP_NAME)
@@ -2087,15 +2195,24 @@ def admin():
     date_str = request.args.get("date") or datetime.now().strftime("%Y-%m-%d")
     status_filter = request.args.get("status", "all")
     search = request.args.get("search", "").strip()
+    # Used to flag reservations that fall outside current operating hours;
+    # never used to modify or cancel them (see count_reservations_outside_hours).
+    open_hour = int(get_setting("open_hour", str(OPEN_HOUR)))
+    close_hour = int(get_setting("close_hour", str(CLOSE_HOUR)))
     conn = db()
 
-    query = """
-        SELECT r.*, t.name AS table_name, t.area
+    outside_hours_expr = """
+               (EXTRACT(HOUR FROM r.reservation_at::timestamp) + EXTRACT(MINUTE FROM r.reservation_at::timestamp)/60.0 < ?
+                OR EXTRACT(HOUR FROM r.reservation_at::timestamp) + EXTRACT(MINUTE FROM r.reservation_at::timestamp)/60.0 >= ?) AS outside_hours"""
+
+    query = f"""
+        SELECT r.*, t.name AS table_name, t.area,
+               {outside_hours_expr}
         FROM reservations r
         LEFT JOIN restaurant_tables t ON t.id = r.table_id
         WHERE r.reservation_at::date = ?::date
     """
-    params = [date_str]
+    params = [open_hour, close_hour, date_str]
     if status_filter != "all":
         query += " AND r.status = ?"
         params.append(status_filter)
@@ -2106,13 +2223,14 @@ def admin():
     query += " ORDER BY r.reservation_at::timestamp"
 
     reservations = conn.execute(query, params).fetchall()
-    all_day = conn.execute("""
-        SELECT r.*, t.name AS table_name, t.area
+    all_day = conn.execute(f"""
+        SELECT r.*, t.name AS table_name, t.area,
+               {outside_hours_expr}
         FROM reservations r
         LEFT JOIN restaurant_tables t ON t.id = r.table_id
         WHERE r.reservation_at::date = ?::date
         ORDER BY r.reservation_at::timestamp
-    """, (date_str,)).fetchall()
+    """, (open_hour, close_hour, date_str)).fetchall()
     tables = conn.execute("SELECT * FROM restaurant_tables WHERE active=1 ORDER BY area, name").fetchall()
     area_counts = conn.execute("""
         SELECT t.area,
