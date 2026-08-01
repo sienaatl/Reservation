@@ -132,8 +132,7 @@ small{color:var(--muted)}
 .form-grid{display:grid;gap:12px}.form-grid h2{margin-bottom:4px}
 .wait-actions{display:flex;gap:8px;align-items:center}.wait-actions select{min-width:180px}
 .wait-actions button{width:auto;padding:9px 12px}
-.guest-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:18px}
-.guest-card{display:grid;gap:10px}.guest-card-head{display:flex;justify-content:space-between;gap:12px}.guest-card h2{margin:0}.vip-check{display:flex;align-items:center;gap:6px}
+.vip-check{display:flex;align-items:center;gap:6px}
 .timeline-wrap{overflow:auto;border:1px solid var(--line);border-radius:14px;background:#fff}
 .timeline-head,.timeline-row{display:grid;grid-template-columns:150px repeat(13,110px);min-width:1580px}
 .timeline-head{position:sticky;top:0;z-index:2;background:var(--cream);font-weight:700}
@@ -155,3 +154,51 @@ small{color:var(--muted)}
 .timeline-booking.outside-hours{background:#fde8e7;color:#81201d}
 .floor-table.outside-hours{outline:3px solid #c0392b;outline-offset:-3px}
 .status-pill.outside-hours{background:#c0392b;margin-bottom:10px}
+
+/* Guest CRM: toolbar, table, pagination, slide-out drawer. */
+.crm-toolbar{display:flex;flex-wrap:wrap;gap:16px;align-items:center;margin-bottom:16px}
+.crm-toolbar #crm-search{max-width:320px}
+.crm-filters{display:flex;flex-wrap:wrap;gap:14px}
+.crm-filters label{display:flex!important;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--muted)}
+.crm-filters input{width:auto!important}
+.crm-table-wrap{overflow:auto;padding:0;max-height:70vh}
+.crm-table{width:100%;border-collapse:collapse;font-size:13px}
+.crm-table thead th{position:sticky;top:0;background:#faf7f1;border-bottom:2px solid var(--line);padding:12px 14px;text-align:left;font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);cursor:pointer;white-space:nowrap;z-index:1}
+.crm-table thead th.sorted{color:var(--ink)}
+.crm-table thead th.sorted::after{content:' ▲'}
+.crm-table thead th.sorted.sorted-desc::after{content:' ▼'}
+.crm-table tbody td{padding:12px 14px;border-bottom:1px solid var(--line);white-space:nowrap}
+.crm-table tbody tr:nth-child(even){background:#fbf9f5}
+.crm-row{cursor:pointer}
+.crm-row:hover{background:#f3e9d8!important}
+.crm-loading{text-align:center;color:var(--muted);padding:30px!important}
+.crm-actions{display:flex;gap:6px}
+.crm-status{display:inline-block;border-radius:999px;padding:3px 9px;font-size:11px;font-weight:700}
+.crm-status-vip{background:#f3e4bf;color:#6c4c17}
+.crm-status-active{background:#e4f5e8;color:#246331}
+.crm-status-new{background:#e5f1f7;color:#2c5f80}
+.crm-status-opted-out{background:#f0ece5;color:var(--muted)}
+.crm-status-confirmed{background:#f3e4bf;color:#6c4c17}
+.crm-status-seated{background:#e5f1f7;color:#2c5f80}
+.crm-status-completed{background:#e4f5e8;color:#246331}
+.crm-status-cancelled,.crm-status-no_show{background:#f0ece5;color:var(--muted)}
+.crm-pagination{display:flex;justify-content:space-between;align-items:center;margin-top:14px;flex-wrap:wrap;gap:10px}
+.crm-pager{display:flex;align-items:center;gap:12px}
+.crm-pager .secondary-action{width:auto;padding:9px 16px}
+.crm-pager .secondary-action:disabled{opacity:.5;cursor:not-allowed}
+
+.crm-drawer{position:fixed;inset:0;visibility:hidden;pointer-events:none;z-index:50}
+.crm-drawer.open{visibility:visible;pointer-events:auto}
+.crm-drawer-backdrop{position:absolute;inset:0;background:rgba(20,14,10,.45);opacity:0;transition:opacity .2s}
+.crm-drawer.open .crm-drawer-backdrop{opacity:1}
+.crm-drawer-panel{position:absolute;top:0;right:0;height:100%;width:min(480px,92vw);background:#fff;box-shadow:-20px 0 50px rgba(0,0,0,.25);transform:translateX(100%);transition:transform .25s ease;overflow-y:auto;padding:26px}
+.crm-drawer.open .crm-drawer-panel{transform:translateX(0)}
+.crm-drawer-head{display:flex;justify-content:space-between;align-items:start;margin-bottom:18px}
+.crm-drawer-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:20px}
+.crm-drawer-grid .crm-wide{grid-column:1/-1}
+.crm-drawer-grid input:disabled{background:#f5f1ea;color:var(--muted)}
+.crm-history{display:grid;gap:8px;margin:12px 0 22px}
+.crm-history-row{display:flex;justify-content:space-between;gap:10px;padding:9px 0;border-bottom:1px solid var(--line);font-size:13px}
+.crm-drawer-actions{display:flex;justify-content:flex-end;gap:10px}
+.crm-drawer-actions .outline-button,.crm-drawer-actions .primary-button{width:auto}
+@media(max-width:700px){.crm-drawer-grid{grid-template-columns:1fr}.crm-toolbar{flex-direction:column;align-items:stretch}.crm-toolbar #crm-search{max-width:none}}
