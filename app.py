@@ -1055,13 +1055,17 @@ def _create_reservation(guest_name, email, phone, party_size, reservation_at_raw
     reservation = conn.execute(
         "SELECT * FROM reservations WHERE id = ?", (reservation_id,)
     ).fetchone()
-    existing_profile = conn.execute("SELECT id FROM guest_profiles WHERE lower(COALESCE(email,''))=? OR phone=? LIMIT 1", (email.lower(), phone)).fetchone()
-    if existing_profile:
-        conn.execute("UPDATE guest_profiles SET guest_name=?, email=?, phone=?, marketing_opt_in=?, marketing_opt_out_at=CASE WHEN ?=1 THEN NULL ELSE marketing_opt_out_at END WHERE id=?",
-                     (guest_name, email.lower(), phone, marketing_opt_in, marketing_opt_in, existing_profile["id"]))
-    else:
-        conn.execute("INSERT INTO guest_profiles(email,phone,guest_name,marketing_opt_in) VALUES (?,?,?,?)",
-                     (email.lower(), phone, guest_name, marketing_opt_in))
+    # Upsert matched on the exact (email, phone) pair the UNIQUE constraint enforces.
+    # A prior version matched on email OR phone, which could find a different,
+    # only-partially-matching row and then collide when trying to overwrite it.
+    conn.execute("""
+        INSERT INTO guest_profiles(email, phone, guest_name, marketing_opt_in)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT (email, phone) DO UPDATE SET
+            guest_name = excluded.guest_name,
+            marketing_opt_in = excluded.marketing_opt_in,
+            marketing_opt_out_at = CASE WHEN excluded.marketing_opt_in = 1 THEN NULL ELSE guest_profiles.marketing_opt_out_at END
+    """, (email.lower(), phone, guest_name, marketing_opt_in))
     conn.commit()
     conn.close()
 
