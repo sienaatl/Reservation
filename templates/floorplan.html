@@ -112,7 +112,19 @@ async function showDetails(t) {
   } else {
     const response = await fetch(`/api/seat-candidates?pin=${encodeURIComponent(pin)}&at=${encodeURIComponent(atInput.value)}`);
     const data = await response.json();
-    const candidates = (data.reservations || []).filter(r => Number(r.party_size) <= Number(t.capacity));
+
+    // Bar stools are single-seat, but the backend now auto-allocates multiple
+    // free stools for a larger party (see /api/tables/<id>/seat), so eligibility
+    // here is based on how many Bar stools are currently free in this area's
+    // data, not this one table's capacity. Dining/Patio keep the original
+    // per-table capacity check, unchanged.
+    let candidates;
+    if (t.area === 'Bar' && currentFloorData) {
+      const freeBarStools = currentFloorData.tables.filter(tb => tb.display_status === 'available').length;
+      candidates = (data.reservations || []).filter(r => Number(r.party_size) <= freeBarStools);
+    } else {
+      candidates = (data.reservations || []).filter(r => Number(r.party_size) <= Number(t.capacity));
+    }
 
     const options = candidates.map(r =>
       `<option value="${esc(r.id)}">${esc(timeLabel(r.reservation_at))} · ${esc(r.guest_name)} · ${esc(r.party_size)} guest${r.party_size === 1 ? '' : 's'}${r.table_name ? ` · assigned ${esc(r.table_name)}` : ''}</option>`
