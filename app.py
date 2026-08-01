@@ -1737,6 +1737,17 @@ def edit_reservation(reservation_id):
                         "error"
                     )
                 else:
+                    # Same Bar-stool release as update_table_status()/update_status():
+                    # a manager reverting status to "confirmed" from this edit page
+                    # should behave identically to doing it from the floor plan or
+                    # admin dashboard. Checked against the table_id from *before*
+                    # this edit, since the form can change table_id and status together.
+                    if status == "confirmed" and reservation["table_id"]:
+                        old_table = conn.execute(
+                            "SELECT area FROM restaurant_tables WHERE id=?", (reservation["table_id"],)
+                        ).fetchone()
+                        if old_table and old_table["area"] == "Bar":
+                            conn.execute("DELETE FROM reservation_tables WHERE reservation_id=?", (reservation_id,))
                     conn.execute("""
                         UPDATE reservations
                         SET guest_name=?, email=?, phone=?, party_size=?, reservation_at=?,
