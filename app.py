@@ -1257,6 +1257,114 @@ def api_book():
     }), result["status"]
 
 
+@app.post("/api/reservations/<reservation_id>/update")
+def api_update_reservation(reservation_id):
+    """Update an existing reservation's time and/or party size. Built for
+    external callers (e.g. a phone-call AI agent via n8n) to modify a
+    booking by its confirmation ID. Re-validates table availability for the
+    new time/party size using the same "keep the table if it still fits,
+    otherwise find a new one" approach as the guest's own manage-link edit
+    (guest_manage()), and sends the same 'updated' email/SMS notification."""
+    require_admin()
+    conn = db()
+    reservation = conn.execute("SELECT * FROM reservations WHERE id = ?", (reservation_id,)).fetchone()
+    if not reservation:
+        conn.close()
+        return jsonify({"ok": False, "error": "Reservation not found."}), 404
+    if reservation["status"] in ("cancelled", "completed", "no_show"):
+        conn.close()
+        return jsonify({
+            "ok": False,
+            "error": f"This reservation is {reservation['status'].replace('_', ' ')} and can't be modified."
+        }), 400
+
+    data = request.get_json(silent=True) or request.form
+
+    try:
+        party_size = int(data.get("party_size"))
+    except (TypeError, ValueError):
+        party_size = None
+    if not party_size or party_size < 1 or party_size > 20:
+        conn.close()
+        return jsonify({"ok": False, "error": "party_size must be a whole number between 1 and 20."}), 400
+
+    reservation_at_raw = data.get("reservation_at")
+    if not reservation_at_raw:
+        conn.close()
+        return jsonify({"ok": False, "error": "reservation_at is required, e.g. 2026-08-02T19:30."}), 400
+    try:
+        new_at = parse_dt(reservation_at_raw)
+    except ValueError:
+        conn.close()
+        return jsonify({"ok": False, "error": "Please provide a valid date/time, e.g. 2026-08-02T19:30."}), 400
+    if new_at <= datetime.now():
+        conn.close()
+        return jsonify({"ok": False, "error": "Reservation time must be in the future."}), 400
+
+    table_id = reservation["table_id"]
+    existing_table = None
+    if table_id:
+        existing_table = conn.execute("SELECT * FROM restaurant_tables WHERE id = ?", (table_id,)).fetchone()
+
+    if (not existing_table
+            or existing_table["capacity"] < party_size
+            or not table_is_available_for_edit(table_id, new_at, reservation["duration_minutes"], reservation["id"])):
+        end = new_at + timedelta(minutes=reservation["duration_minutes"])
+        replacement = conn.execute("""
+            SELECT t.*
+            FROM restaurant_tables t
+            WHERE t.capacity >= ?
+              AND t.active = 1
+              AND NOT EXISTS (
+                SELECT 1 FROM reservations r
+                WHERE r.table_id = t.id
+                  AND r.id != ?
+                  AND r.status IN ('confirmed','seated','walk_in')
+                  AND reservation_at::timestamp < ?::timestamp
+                  AND reservation_at::timestamp + make_interval(mins => r.duration_minutes) > ?::timestamp
+              )
+            ORDER BY t.capacity, t.id
+            LIMIT 1
+        """, (
+            party_size, reservation_id,
+            end.isoformat(timespec="minutes"), new_at.isoformat(timespec="minutes")
+        )).fetchone()
+        table_id = replacement["id"] if replacement else None
+
+    if table_id is None:
+        conn.close()
+        return jsonify({
+            "ok": False,
+            "error": "That date and time is unavailable for this party size. Please choose another time."
+        }), 409
+
+    conn.execute("""
+        UPDATE reservations
+        SET party_size=?, reservation_at=?, table_id=?, status='confirmed',
+            sms_reminder_24h_sent_at=NULL, sms_reminder_2h_sent_at=NULL
+        WHERE id=?
+    """, (party_size, new_at.isoformat(timespec="minutes"), table_id, reservation_id))
+    conn.commit()
+    updated = conn.execute("SELECT * FROM reservations WHERE id = ?", (reservation_id,)).fetchone()
+    conn.close()
+
+    email_sent = send_reservation_email(updated, "updated")
+    sms_sent = send_reservation_sms(updated, "updated")
+
+    return jsonify({
+        "ok": True,
+        "reservation": {
+            "id": updated["id"],
+            "guest_name": updated["guest_name"],
+            "party_size": updated["party_size"],
+            "reservation_at": updated["reservation_at"],
+            "status": updated["status"],
+        },
+        "email_sent": email_sent,
+        "sms_sent": sms_sent,
+    })
+
+
 @app.get("/confirmation/<reservation_id>")
 def confirmation(reservation_id):
     conn = db()
