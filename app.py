@@ -1220,7 +1220,10 @@ def api_book():
     if request.method == "OPTIONS":
         return ("", 204)
 
-    data = request.get_json(silent=True) or request.form
+    # Accept JSON body, form body, or query-string params -- external tools
+    # like n8n's HTTP Request node sometimes send params as a query string
+    # even when configured for a POST, so don't fail on that.
+    data = request.get_json(silent=True) or request.form or request.args
     guest_name = data.get("guest_name")
     email = data.get("email")
     phone = data.get("phone")
@@ -1278,7 +1281,7 @@ def api_update_reservation(reservation_id):
             "error": f"This reservation is {reservation['status'].replace('_', ' ')} and can't be modified."
         }), 400
 
-    data = request.get_json(silent=True) or request.form
+    data = request.get_json(silent=True) or request.form or request.args
 
     try:
         party_size = int(data.get("party_size"))
