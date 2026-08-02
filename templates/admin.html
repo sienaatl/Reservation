@@ -48,47 +48,42 @@
         </div>
 
         {% macro reservation_card(r) %}
-        <article class="reservation-row status-{{ r.status }}{% if r.outside_hours %} outside-hours{% endif %}" data-id="{{ r.id }}" data-status="{{ r.status }}" data-party-size="{{ r.party_size }}" data-time="{{ r.reservation_at[11:16] }}">
-          <div class="reservation-time">{{ r.reservation_at[11:16] }}</div>
-          <div class="guest-block">
-            <strong>{{ r.guest_name }}</strong>
-            <span>{{ r.phone }} · {{ r.email }}</span>
-            {% if r.occasion %}<small>{{ r.occasion }}</small>{% endif %}
-            {% if r.outside_hours %}<span class="hours-warning" title="This reservation is outside the current operating hours.">⚠ Outside Operating Hours</span>{% endif %}
-          </div>
-          <div class="party-block"><strong>{{ r.party_size }}</strong><span>guests</span></div>
-          <form class="compact-form" method="post" action="{{ url_for('assign_reservation', reservation_id=r.id) }}">
-            <input type="hidden" name="pin" value="{{ pin }}"><input type="hidden" name="date" value="{{ date_str }}">
-            <select name="table_id" onchange="this.form.submit()">
-              <option value="">No table</option>
-              {% for t in tables %}<option value="{{ t.id }}" {% if r.table_id==t.id %}selected{% endif %}>{{ t.name }} · {{ t.area }}</option>{% endfor %}
-            </select>
-          </form>
-          <form class="compact-form status-update-form" method="post" action="{{ url_for('update_status', reservation_id=r.id) }}">
-            <input type="hidden" name="pin" value="{{ pin }}"><input type="hidden" name="date" value="{{ date_str }}">
-            <select class="status-select status-{{ r.status }}" name="status">
-              {% for status in ['confirmed','seated','walk_in','completed','cancelled','no_show'] %}
-              <option value="{{ status }}" {% if r.status==status %}selected{% endif %}>{{ status.replace('_',' ').title() }}</option>
-              {% endfor %}
-            </select>
-          </form>
-          <div class="reservation-actions">
-            <span class="confirmation-code">{{ r.id }}</span>
-            <div class="action-buttons">
-              <a class="edit-reservation-button" href="{{ url_for('edit_reservation', reservation_id=r.id, pin=pin) }}">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
-                Edit
-              </a>
+        {% set h24 = r.reservation_at[11:13]|int %}
+        {% set period = 'AM' if h24 < 12 else 'PM' %}
+        {% set h12 = h24 % 12 %}
+        {% if h12 == 0 %}{% set h12 = 12 %}{% endif %}
+        <details class="reservation-row{% if r.outside_hours %} outside-hours{% endif %}" data-id="{{ r.id }}" data-status="{{ r.status }}" data-party-size="{{ r.party_size }}" data-time="{{ r.reservation_at[11:16] }}">
+          <summary>
+            <span class="row-time">{{ h12 }}:{{ r.reservation_at[14:16] }} {{ period }}</span>
+            <span class="row-party">{{ r.party_size }}</span>
+            <span class="row-name">{{ r.guest_name }}</span>
+            <span class="row-table-badge">{{ r.table_name or '—' }}</span>
+            <span class="status-pill-row status-pill-{{ r.status }}">{{ r.status.replace('_',' ').title() }}</span>
+            <span class="row-quick-actions" onclick="event.stopPropagation()">
+              <form class="quick-status-form" method="post" action="{{ url_for('update_status', reservation_id=r.id) }}" data-target-status="seated">
+                <input type="hidden" name="pin" value="{{ pin }}"><input type="hidden" name="date" value="{{ date_str }}"><input type="hidden" name="status" value="seated">
+                <button type="submit" class="icon-action-button" data-quick="seat" title="Seat">🪑</button>
+              </form>
+              <form class="quick-status-form" method="post" action="{{ url_for('update_status', reservation_id=r.id) }}" data-target-status="completed">
+                <input type="hidden" name="pin" value="{{ pin }}"><input type="hidden" name="date" value="{{ date_str }}"><input type="hidden" name="status" value="completed">
+                <button type="submit" class="icon-action-button" data-quick="complete" title="Complete">✅</button>
+              </form>
+              <a class="icon-action-button" href="{{ url_for('edit_reservation', reservation_id=r.id, pin=pin) }}" title="Edit">✏️</a>
               <form method="post" action="{{ url_for('admin_resend_email', reservation_id=r.id) }}" class="inline-action-form">
                 <input type="hidden" name="pin" value="{{ pin }}">
-                <button type="submit" class="small-action-button">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 6-10 7L2 6"/></svg>
-                  Resend Email
-                </button>
+                <button type="submit" class="icon-action-button" title="Resend Email">📧</button>
               </form>
-            </div>
+            </span>
+          </summary>
+          <div class="row-expanded">
+            <div><b>Phone</b>{{ r.phone }}</div>
+            <div><b>Email</b>{{ r.email }}</div>
+            {% if r.occasion %}<div><b>Occasion</b>{{ r.occasion }}</div>{% endif %}
+            {% if r.notes %}<div><b>Notes</b>{{ r.notes }}</div>{% endif %}
+            <div><b>Confirmation</b>{{ r.id }}</div>
+            {% if r.outside_hours %}<div class="hours-warning">⚠ Outside Operating Hours</div>{% endif %}
           </div>
-        </article>
+        </details>
         {% endmacro %}
 
         <div class="reservation-book" id="reservation-book">
@@ -110,7 +105,7 @@
               <span class="group-chevron">▾</span>
             </summary>
             <div class="reservation-list" id="list-{{ key }}">
-              {% for r in group_reservations %}{{ reservation_card(r) }}{% else %}<div class="empty-state">No reservations here.</div>{% endfor %}
+              {% for r in group_reservations %}{{ reservation_card(r) }}{% else %}<div class="empty-state">No reservations</div>{% endfor %}
             </div>
           </details>
           {% endfor %}
@@ -165,10 +160,11 @@
 </dialog>
 
 <script>
-// Moves a reservation card between the Reservation Book's grouped sections
-// when its status changes, instead of the previous full-page reload.
-// Everything else on this page (table assignment, edit, resend email, the
-// new-booking dialog) is untouched and still does a normal form submit.
+// Moves a reservation row between the Reservation Book's grouped sections
+// when its status changes via the compact Seat/Complete quick actions,
+// instead of a full-page reload. Table assignment now lives on the Edit
+// page only; Edit and Resend Email still do their normal request (Edit
+// navigates, Resend Email does a plain form submit).
 (function () {
   const book = document.getElementById('reservation-book');
   if (!book) return;
@@ -179,32 +175,36 @@
     completed: 'finished',
     cancelled: 'removed', no_show: 'removed',
   };
+  const STATUS_LABEL = {
+    confirmed: 'Confirmed', walk_in: 'Walk In', seated: 'Seated',
+    completed: 'Completed', cancelled: 'Cancelled', no_show: 'No Show',
+  };
 
   function updateGroupCounts(groupKey) {
     const details = document.getElementById(`group-${groupKey}`);
     if (!details) return;
-    const cards = details.querySelectorAll('.reservation-row');
-    const guestTotal = Array.from(cards).reduce((sum, c) => sum + Number(c.dataset.partySize || 0), 0);
-    details.querySelector('.group-count-primary').textContent = cards.length;
+    const rows = details.querySelectorAll('.reservation-row');
+    const guestTotal = Array.from(rows).reduce((sum, r) => sum + Number(r.dataset.partySize || 0), 0);
+    details.querySelector('.group-count-primary').textContent = rows.length;
     details.querySelector('.group-count-guests').textContent = guestTotal;
   }
 
-  function insertSorted(listEl, article) {
-    const time = article.dataset.time;
+  function insertSorted(listEl, row) {
+    const time = row.dataset.time;
     const existing = Array.from(listEl.querySelectorAll('.reservation-row'));
     const after = existing.find(el => el.dataset.time > time);
-    if (after) listEl.insertBefore(article, after);
-    else listEl.appendChild(article);
+    if (after) listEl.insertBefore(row, after);
+    else listEl.appendChild(row);
   }
 
-  book.addEventListener('change', async (e) => {
-    const select = e.target.closest('.status-select');
-    if (!select) return;
+  book.addEventListener('submit', async (e) => {
+    const form = e.target.closest('.quick-status-form');
+    if (!form) return;
+    e.preventDefault();
 
-    const form = select.closest('form');
-    const article = select.closest('.reservation-row');
-    const oldStatus = article.dataset.status;
-    const newStatus = select.value;
+    const row = form.closest('.reservation-row');
+    const oldStatus = row.dataset.status;
+    const newStatus = form.dataset.targetStatus;
     const oldGroupKey = GROUP_FOR_STATUS[oldStatus];
     const newGroupKey = GROUP_FOR_STATUS[newStatus];
 
@@ -217,25 +217,23 @@
     }
     if (!response || !response.ok) {
       alert('Unable to update status. Please try again.');
-      select.value = oldStatus;
       return;
     }
 
-    article.classList.remove(`status-${oldStatus}`);
-    article.classList.add(`status-${newStatus}`);
-    article.dataset.status = newStatus;
-    select.classList.remove(`status-${oldStatus}`);
-    select.classList.add(`status-${newStatus}`);
+    row.dataset.status = newStatus;
+    const pill = row.querySelector('.status-pill-row');
+    pill.className = `status-pill-row status-pill-${newStatus}`;
+    pill.textContent = STATUS_LABEL[newStatus];
 
     if (newGroupKey !== oldGroupKey) {
       const targetList = document.getElementById(`list-${newGroupKey}`);
       const placeholder = targetList.querySelector('.empty-state');
       if (placeholder) placeholder.remove();
-      insertSorted(targetList, article);
+      insertSorted(targetList, row);
 
       const sourceList = document.getElementById(`list-${oldGroupKey}`);
       if (!sourceList.querySelector('.reservation-row')) {
-        sourceList.innerHTML = '<div class="empty-state">No reservations here.</div>';
+        sourceList.innerHTML = '<div class="empty-state">No reservations</div>';
       }
 
       updateGroupCounts(oldGroupKey);
