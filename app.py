@@ -1860,8 +1860,14 @@ def edit_reservation(reservation_id):
                         table_id, status, occasion, notes, reservation_id
                     ))
                     conn.commit()
+                    # Same notification as the guest's own self-service edit
+                    # (guest_manage()) -- staff edits now notify the guest too,
+                    # not just changes the guest makes themselves.
+                    updated = conn.execute("SELECT * FROM reservations WHERE id = ?", (reservation_id,)).fetchone()
                     conn.close()
-                    flash(f"Reservation {reservation_id} updated.", "success")
+                    send_reservation_email(updated, "updated")
+                    send_reservation_sms(updated, "updated")
+                    flash(f"Reservation {reservation_id} updated. Confirmation messages were sent where enabled.", "success")
                     return redirect(url_for(
                         "admin", date=reservation_at.strftime("%Y-%m-%d"), pin=pin
                     ))
