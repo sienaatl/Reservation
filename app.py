@@ -1475,6 +1475,83 @@ def api_confirm_reservation(reservation_id):
     })
 
 
+@app.post("/api/large-party-inquiry")
+def api_large_party_inquiry():
+    """Sends a large-party caller to the event inquiry form instead of
+    creating a reservation directly -- doesn't touch the reservations table
+    at all. Built for external callers (e.g. a phone-call AI agent via n8n)
+    handling parties over 11 guests. Not linked anywhere in this app's own
+    UI -- API-only, for the agent integration."""
+    require_admin()
+    data = request.get_json(silent=True) or request.form or request.args
+
+    guest_name = (data.get("guest_name") or "").strip()
+    email = (data.get("email") or "").strip()
+    phone = (data.get("phone") or "").strip()
+    try:
+        party_size = int(data.get("party_size"))
+    except (TypeError, ValueError):
+        party_size = None
+
+    if not guest_name or not email or not phone or not party_size:
+        return jsonify({"ok": False, "error": "guest_name, email, phone, and party_size are all required."}), 400
+    if party_size <= 11:
+        return jsonify({
+            "ok": False,
+            "error": "This is for parties larger than 11 guests. For 11 or fewer, book normally instead."
+        }), 400
+
+    first_name = guest_name.split()[0]
+    inquiry_url = "https://sienaatl.com/event-inquiry"
+
+    subject = "Your Large Party Request — Siena Restaurant and Bar"
+    text_body = f"""Hi {first_name},
+
+Thank you for your interest in dining with us! For parties of {party_size} guests, please submit your request through our event inquiry form so our team can arrange the best experience for your group:
+
+{inquiry_url}
+
+If you have any questions, call us at {RESTAURANT_PHONE}.
+
+Siena Restaurant and Bar
+{RESTAURANT_ADDRESS}
+"""
+    html_body = f"""<!doctype html>
+<html>
+<body style="margin:0;background:#f5f0e8;font-family:Arial,sans-serif;color:#211b18">
+  <div style="max-width:620px;margin:32px auto;background:#ffffff;border-radius:14px;overflow:hidden;border:1px solid #ddd2c4">
+    <div style="background:#080808;padding:26px;text-align:center">
+      <div style="color:#fff;font-family:Georgia,serif;font-size:36px;font-style:italic">Siena</div>
+      <div style="color:#c9a25d;letter-spacing:4px;font-size:10px">RESTAURANT AND BAR</div>
+    </div>
+    <div style="padding:30px">
+      <h1 style="font-family:Georgia,serif;font-size:26px;margin:0 0 12px">Large Party Request</h1>
+      <p style="color:#6f655e">Hello {guest_name}, thank you for your interest in dining with us.</p>
+      <p style="color:#6f655e">For parties of <strong>{party_size} guests</strong>, please submit your request through our event inquiry form so our team can arrange the best experience for your group.</p>
+      <a href="{inquiry_url}" style="display:block;text-align:center;margin:24px 0 10px;background:#6f1d2b;color:#fff;text-decoration:none;padding:15px;border-radius:8px;font-weight:bold">
+        Submit Event Inquiry
+      </a>
+      <p style="font-size:12px;color:#756b64;text-align:center">Questions? Call {RESTAURANT_PHONE}.</p>
+    </div>
+    <div style="background:#111;color:#ddd;padding:20px;text-align:center;font-size:12px;line-height:1.7">
+      {RESTAURANT_ADDRESS}<br>{RESTAURANT_PHONE}
+    </div>
+  </div>
+</body>
+</html>"""
+    email_sent = send_email(email, subject, html_body, text_body)
+
+    sms_body = (f"Hi {first_name}, for parties of {party_size} guests please submit a request at "
+                f"{inquiry_url} so our team can arrange your visit. Questions? Call {RESTAURANT_PHONE}.")
+    sms_sent = send_sms(phone, sms_body)
+
+    return jsonify({
+        "ok": True,
+        "email_sent": email_sent,
+        "sms_sent": sms_sent,
+    })
+
+
 @app.get("/confirmation/<reservation_id>")
 def confirmation(reservation_id):
     conn = db()
