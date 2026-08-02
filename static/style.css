@@ -169,6 +169,21 @@ small{color:var(--muted)}
 .date-filter{display:flex;gap:8px;align-items:center}
 .date-filter input{width:auto;min-width:170px}
 
+/* Reservation Book: OpenTable-style collapsible status groups. Cards inside
+   keep using the existing .reservation-row/.reservation-list rules unchanged
+   -- only the grouping wrapper and its <summary> header are new. */
+.reservation-book{display:flex;flex-direction:column;gap:14px}
+.reservation-group{border:1px solid var(--line);border-radius:14px;overflow:hidden;background:#fff}
+.reservation-group summary{display:flex;align-items:center;gap:14px;padding:16px 20px;cursor:pointer;list-style:none;background:#faf7f1}
+.reservation-group summary::-webkit-details-marker{display:none}
+.reservation-group summary::marker{content:''}
+.group-title{font-family:"Playfair Display",serif;font-size:18px;font-weight:700;flex:0 0 auto}
+.group-counts{color:var(--muted);font-size:13px;flex:1}
+.group-counts b{color:var(--ink)}
+.group-chevron{color:var(--muted);transition:transform .2s}
+.reservation-group[open] .group-chevron{transform:rotate(180deg)}
+.reservation-group .empty-state{padding:24px;text-align:center;color:var(--muted)}
+
 /* Operating-hours warning badges: reservation list, timeline, floor plan. */
 .hours-warning{display:inline-block;margin-top:4px;background:#fde8e7;color:#81201d;border-radius:999px;padding:3px 9px;font-size:11px;font-weight:700}
 .reservation-row.outside-hours{border-left-color:#c0392b}

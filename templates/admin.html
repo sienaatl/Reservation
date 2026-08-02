@@ -47,42 +47,65 @@
           </form>
         </div>
 
-        <div class="reservation-list">
-          {% for r in reservations %}
-          <article class="reservation-row status-{{ r.status }}{% if r.outside_hours %} outside-hours{% endif %}">
-            <div class="reservation-time">{{ r.reservation_at[11:16] }}</div>
-            <div class="guest-block">
-              <strong>{{ r.guest_name }}</strong>
-              <span>{{ r.phone }} · {{ r.email }}</span>
-              {% if r.occasion %}<small>{{ r.occasion }}</small>{% endif %}
-              {% if r.outside_hours %}<span class="hours-warning" title="This reservation is outside the current operating hours.">⚠ Outside Operating Hours</span>{% endif %}
-            </div>
-            <div class="party-block"><strong>{{ r.party_size }}</strong><span>guests</span></div>
-            <form class="compact-form" method="post" action="{{ url_for('assign_reservation', reservation_id=r.id) }}">
-              <input type="hidden" name="pin" value="{{ pin }}"><input type="hidden" name="date" value="{{ date_str }}">
-              <select name="table_id" onchange="this.form.submit()">
-                <option value="">No table</option>
-                {% for t in tables %}<option value="{{ t.id }}" {% if r.table_id==t.id %}selected{% endif %}>{{ t.name }} · {{ t.area }}</option>{% endfor %}
-              </select>
+        {% macro reservation_card(r) %}
+        <article class="reservation-row status-{{ r.status }}{% if r.outside_hours %} outside-hours{% endif %}" data-id="{{ r.id }}" data-status="{{ r.status }}" data-party-size="{{ r.party_size }}" data-time="{{ r.reservation_at[11:16] }}">
+          <div class="reservation-time">{{ r.reservation_at[11:16] }}</div>
+          <div class="guest-block">
+            <strong>{{ r.guest_name }}</strong>
+            <span>{{ r.phone }} · {{ r.email }}</span>
+            {% if r.occasion %}<small>{{ r.occasion }}</small>{% endif %}
+            {% if r.outside_hours %}<span class="hours-warning" title="This reservation is outside the current operating hours.">⚠ Outside Operating Hours</span>{% endif %}
+          </div>
+          <div class="party-block"><strong>{{ r.party_size }}</strong><span>guests</span></div>
+          <form class="compact-form" method="post" action="{{ url_for('assign_reservation', reservation_id=r.id) }}">
+            <input type="hidden" name="pin" value="{{ pin }}"><input type="hidden" name="date" value="{{ date_str }}">
+            <select name="table_id" onchange="this.form.submit()">
+              <option value="">No table</option>
+              {% for t in tables %}<option value="{{ t.id }}" {% if r.table_id==t.id %}selected{% endif %}>{{ t.name }} · {{ t.area }}</option>{% endfor %}
+            </select>
+          </form>
+          <form class="compact-form status-update-form" method="post" action="{{ url_for('update_status', reservation_id=r.id) }}">
+            <input type="hidden" name="pin" value="{{ pin }}"><input type="hidden" name="date" value="{{ date_str }}">
+            <select class="status-select status-{{ r.status }}" name="status">
+              {% for status in ['confirmed','seated','walk_in','completed','cancelled','no_show'] %}
+              <option value="{{ status }}" {% if r.status==status %}selected{% endif %}>{{ status.replace('_',' ').title() }}</option>
+              {% endfor %}
+            </select>
+          </form>
+          <div class="reservation-actions">
+            <span class="confirmation-code">{{ r.id }}</span>
+            <a class="edit-reservation-button" href="{{ url_for('edit_reservation', reservation_id=r.id, pin=pin) }}">Edit</a>
+            <form method="post" action="{{ url_for('admin_resend_email', reservation_id=r.id) }}" class="inline-action-form">
+              <input type="hidden" name="pin" value="{{ pin }}">
+              <button type="submit" class="small-action-button">Resend Email</button>
             </form>
-            <form class="compact-form" method="post" action="{{ url_for('update_status', reservation_id=r.id) }}">
-              <input type="hidden" name="pin" value="{{ pin }}"><input type="hidden" name="date" value="{{ date_str }}">
-              <select class="status-select status-{{ r.status }}" name="status" onchange="this.form.submit()">
-                {% for status in ['confirmed','seated','walk_in','completed','cancelled','no_show'] %}
-                <option value="{{ status }}" {% if r.status==status %}selected{% endif %}>{{ status.replace('_',' ').title() }}</option>
-                {% endfor %}
-              </select>
-            </form>
-            <div class="reservation-actions">
-              <span class="confirmation-code">{{ r.id }}</span>
-              <a class="edit-reservation-button" href="{{ url_for('edit_reservation', reservation_id=r.id, pin=pin) }}">Edit</a>
-              <form method="post" action="{{ url_for('admin_resend_email', reservation_id=r.id) }}" class="inline-action-form">
-                <input type="hidden" name="pin" value="{{ pin }}">
-                <button type="submit" class="small-action-button">Resend Email</button>
-              </form>
+          </div>
+        </article>
+        {% endmacro %}
+
+        <div class="reservation-book" id="reservation-book">
+          {% for key, title, statuses, is_open, count_word in [
+            ('reservations', 'Reservations', ['confirmed','walk_in'], true, 'reservations'),
+            ('seated', 'Seated', ['seated'], true, 'tables'),
+            ('finished', 'Finished', ['completed'], false, 'reservations'),
+            ('removed', 'Removed', ['cancelled','no_show'], false, 'reservations')
+          ] %}
+          {% set group_reservations = reservations|selectattr('status','in',statuses)|list %}
+          <details class="reservation-group" id="group-{{ key }}" {% if is_open %}open{% endif %}>
+            <summary>
+              <span class="group-title">{{ title }}</span>
+              <span class="group-counts">
+                <b class="group-count-primary">{{ group_reservations|length }}</b> {{ count_word }}
+                &middot;
+                <b class="group-count-guests">{{ group_reservations|sum(attribute='party_size') }}</b> guests
+              </span>
+              <span class="group-chevron">▾</span>
+            </summary>
+            <div class="reservation-list" id="list-{{ key }}">
+              {% for r in group_reservations %}{{ reservation_card(r) }}{% else %}<div class="empty-state">No reservations here.</div>{% endfor %}
             </div>
-          </article>
-          {% else %}<div class="empty-state">No reservations match this date and filter.</div>{% endfor %}
+          </details>
+          {% endfor %}
         </div>
       </section>
     </div>
@@ -132,4 +155,85 @@
     <button class="primary-button full-button" type="submit">Create Reservation</button>
   </form>
 </dialog>
+
+<script>
+// Moves a reservation card between the Reservation Book's grouped sections
+// when its status changes, instead of the previous full-page reload.
+// Everything else on this page (table assignment, edit, resend email, the
+// new-booking dialog) is untouched and still does a normal form submit.
+(function () {
+  const book = document.getElementById('reservation-book');
+  if (!book) return;
+
+  const GROUP_FOR_STATUS = {
+    confirmed: 'reservations', walk_in: 'reservations',
+    seated: 'seated',
+    completed: 'finished',
+    cancelled: 'removed', no_show: 'removed',
+  };
+
+  function updateGroupCounts(groupKey) {
+    const details = document.getElementById(`group-${groupKey}`);
+    if (!details) return;
+    const cards = details.querySelectorAll('.reservation-row');
+    const guestTotal = Array.from(cards).reduce((sum, c) => sum + Number(c.dataset.partySize || 0), 0);
+    details.querySelector('.group-count-primary').textContent = cards.length;
+    details.querySelector('.group-count-guests').textContent = guestTotal;
+  }
+
+  function insertSorted(listEl, article) {
+    const time = article.dataset.time;
+    const existing = Array.from(listEl.querySelectorAll('.reservation-row'));
+    const after = existing.find(el => el.dataset.time > time);
+    if (after) listEl.insertBefore(article, after);
+    else listEl.appendChild(article);
+  }
+
+  book.addEventListener('change', async (e) => {
+    const select = e.target.closest('.status-select');
+    if (!select) return;
+
+    const form = select.closest('form');
+    const article = select.closest('.reservation-row');
+    const oldStatus = article.dataset.status;
+    const newStatus = select.value;
+    const oldGroupKey = GROUP_FOR_STATUS[oldStatus];
+    const newGroupKey = GROUP_FOR_STATUS[newStatus];
+
+    const body = new URLSearchParams(new FormData(form));
+    let response;
+    try {
+      response = await fetch(form.action, { method: 'POST', body });
+    } catch (err) {
+      response = null;
+    }
+    if (!response || !response.ok) {
+      alert('Unable to update status. Please try again.');
+      select.value = oldStatus;
+      return;
+    }
+
+    article.classList.remove(`status-${oldStatus}`);
+    article.classList.add(`status-${newStatus}`);
+    article.dataset.status = newStatus;
+    select.classList.remove(`status-${oldStatus}`);
+    select.classList.add(`status-${newStatus}`);
+
+    if (newGroupKey !== oldGroupKey) {
+      const targetList = document.getElementById(`list-${newGroupKey}`);
+      const placeholder = targetList.querySelector('.empty-state');
+      if (placeholder) placeholder.remove();
+      insertSorted(targetList, article);
+
+      const sourceList = document.getElementById(`list-${oldGroupKey}`);
+      if (!sourceList.querySelector('.reservation-row')) {
+        sourceList.innerHTML = '<div class="empty-state">No reservations here.</div>';
+      }
+
+      updateGroupCounts(oldGroupKey);
+      updateGroupCounts(newGroupKey);
+    }
+  });
+})();
+</script>
 {% endblock %}
