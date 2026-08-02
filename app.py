@@ -1264,10 +1264,11 @@ def api_book():
 def api_update_reservation(reservation_id):
     """Update an existing reservation's time and/or party size. Built for
     external callers (e.g. a phone-call AI agent via n8n) to modify a
-    booking by its confirmation ID. Re-validates table availability for the
-    new time/party size using the same "keep the table if it still fits,
-    otherwise find a new one" approach as the guest's own manage-link edit
-    (guest_manage()), and sends the same 'updated' email/SMS notification."""
+    booking by its confirmation ID. Keeps the current table if it still fits
+    and is free; otherwise runs find_table_allocation() -- the same
+    allocator new bookings use, so a larger party can be moved onto a
+    combination of tables, not just a single bigger one. Sends the same
+    'updated' email/SMS notification as the guest's own manage-link edit."""
     require_admin()
     conn = db()
     reservation = conn.execute("SELECT * FROM reservations WHERE id = ?", (reservation_id,)).fetchone()
@@ -1309,30 +1310,27 @@ def api_update_reservation(reservation_id):
     if table_id:
         existing_table = conn.execute("SELECT * FROM restaurant_tables WHERE id = ?", (table_id,)).fetchone()
 
-    if (not existing_table
-            or existing_table["capacity"] < party_size
-            or not table_is_available_for_edit(table_id, new_at, reservation["duration_minutes"], reservation["id"])):
-        end = new_at + timedelta(minutes=reservation["duration_minutes"])
-        replacement = conn.execute("""
-            SELECT t.*
-            FROM restaurant_tables t
-            WHERE t.capacity >= ?
-              AND t.active = 1
-              AND NOT EXISTS (
-                SELECT 1 FROM reservations r
-                WHERE r.table_id = t.id
-                  AND r.id != ?
-                  AND r.status IN ('confirmed','seated','walk_in')
-                  AND reservation_at::timestamp < ?::timestamp
-                  AND reservation_at::timestamp + make_interval(mins => r.duration_minutes) > ?::timestamp
-              )
-            ORDER BY t.capacity, t.id
-            LIMIT 1
-        """, (
-            party_size, reservation_id,
-            end.isoformat(timespec="minutes"), new_at.isoformat(timespec="minutes")
-        )).fetchone()
-        table_id = replacement["id"] if replacement else None
+    # new_table_ids stays None when the current table is kept as-is (its
+    # existing reservation_tables rows are left untouched); it's only set
+    # when we assign a fresh allocation, which may span multiple tables.
+    new_table_ids = None
+    new_duration = reservation["duration_minutes"]
+
+    if not (existing_table
+            and existing_table["capacity"] >= party_size
+            and table_is_available_for_edit(table_id, new_at, reservation["duration_minutes"], reservation["id"])):
+        # find_table_allocation() is the same allocator new bookings use --
+        # it already prefers a single table when one fits and only combines
+        # multiple free tables when the party needs more seats than any one
+        # table has, so this single call replaces what used to be a
+        # single-table-only fallback query.
+        allocation = find_table_allocation(new_at, party_size, exclude_reservation_id=reservation_id)
+        if allocation:
+            table_id = allocation["table_ids"][0]
+            new_table_ids = allocation["table_ids"]
+            new_duration = allocation["recommended_duration"]
+        else:
+            table_id = None
 
     if table_id is None:
         conn.close()
@@ -1343,12 +1341,24 @@ def api_update_reservation(reservation_id):
 
     conn.execute("""
         UPDATE reservations
-        SET party_size=?, reservation_at=?, table_id=?, status='confirmed',
+        SET party_size=?, reservation_at=?, table_id=?, duration_minutes=?, status='confirmed',
             sms_reminder_24h_sent_at=NULL, sms_reminder_2h_sent_at=NULL
         WHERE id=?
-    """, (party_size, new_at.isoformat(timespec="minutes"), table_id, reservation_id))
+    """, (party_size, new_at.isoformat(timespec="minutes"), table_id, new_duration, reservation_id))
+    if new_table_ids is not None:
+        conn.execute("DELETE FROM reservation_tables WHERE reservation_id=?", (reservation_id,))
+        conn.executemany(
+            "INSERT INTO reservation_tables(reservation_id, table_id) VALUES (?, ?)",
+            [(reservation_id, tid) for tid in new_table_ids]
+        )
     conn.commit()
     updated = conn.execute("SELECT * FROM reservations WHERE id = ?", (reservation_id,)).fetchone()
+    table_rows = conn.execute("""
+        SELECT t.name FROM reservation_tables rt
+        JOIN restaurant_tables t ON t.id = rt.table_id
+        WHERE rt.reservation_id = ?
+        ORDER BY t.name
+    """, (reservation_id,)).fetchall()
     conn.close()
 
     email_sent = send_reservation_email(updated, "updated")
@@ -1362,6 +1372,7 @@ def api_update_reservation(reservation_id):
             "party_size": updated["party_size"],
             "reservation_at": updated["reservation_at"],
             "status": updated["status"],
+            "table_names": [t["name"] for t in table_rows],
         },
         "email_sent": email_sent,
         "sms_sent": sms_sent,
