@@ -37,7 +37,7 @@
           <form method="get" class="dashboard-filter">
             <input type="hidden" name="pin" value="{{ pin }}">
             <input type="date" name="date" value="{{ date_str }}" onchange="this.form.submit()">
-            <select name="status">
+            <select name="status" onchange="this.form.submit()">
               {% for value,label in [('all','All statuses'),('confirmed','Confirmed'),('seated','Seated'),('walk_in','Walk-ins'),('completed','Completed'),('cancelled','Cancelled'),('no_show','No-show')] %}
               <option value="{{ value }}" {% if status_filter==value %}selected{% endif %}>{{ label }}</option>
               {% endfor %}
