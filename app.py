@@ -1379,6 +1379,50 @@ def api_update_reservation(reservation_id):
     })
 
 
+@app.post("/api/reservations/<reservation_id>/cancel")
+def api_cancel_reservation(reservation_id):
+    """Cancel an existing reservation by confirmation ID. Status-only --
+    never deletes the row. Built for external callers (e.g. a phone-call AI
+    agent via n8n). Sends the same 'cancelled' email/SMS notification the
+    guest's own manage-link cancel action sends (guest_manage())."""
+    require_admin()
+    conn = db()
+    reservation = conn.execute("SELECT * FROM reservations WHERE id = ?", (reservation_id,)).fetchone()
+    if not reservation:
+        conn.close()
+        return jsonify({"ok": False, "error": "Reservation not found."}), 404
+    if reservation["status"] in ("cancelled", "completed", "no_show"):
+        conn.close()
+        return jsonify({
+            "ok": False,
+            "error": f"This reservation is already {reservation['status'].replace('_', ' ')}."
+        }), 400
+
+    conn.execute("UPDATE reservations SET status='cancelled' WHERE id=?", (reservation_id,))
+    conn.commit()
+    updated = conn.execute("SELECT * FROM reservations WHERE id = ?", (reservation_id,)).fetchone()
+    conn.close()
+
+    email_sent = send_reservation_email(updated, "cancelled")
+    sms_sent = send_reservation_sms(updated, "cancelled")
+    if sms_sent:
+        conn2 = db()
+        conn2.execute("UPDATE reservations SET sms_cancelled_sent_at=? WHERE id=?",
+                      (datetime.now().isoformat(timespec="seconds"), reservation_id))
+        conn2.commit(); conn2.close()
+
+    return jsonify({
+        "ok": True,
+        "reservation": {
+            "id": updated["id"],
+            "guest_name": updated["guest_name"],
+            "status": updated["status"],
+        },
+        "email_sent": email_sent,
+        "sms_sent": sms_sent,
+    })
+
+
 @app.get("/confirmation/<reservation_id>")
 def confirmation(reservation_id):
     conn = db()
