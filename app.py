@@ -1423,6 +1423,58 @@ def api_cancel_reservation(reservation_id):
     })
 
 
+@app.post("/api/reservations/<reservation_id>/confirm")
+def api_confirm_reservation(reservation_id):
+    """Set an existing reservation's status back to 'confirmed' -- e.g.
+    undoing an accidental cancellation, recovering a no-show, or reverting
+    a seated reservation. Built for external callers (e.g. a phone-call AI
+    agent via n8n). Releases any multi-stool Bar allocation the same way
+    update_table_status()/update_status()/edit_reservation() already do,
+    and sends the same 'confirmed' email/SMS as a fresh booking."""
+    require_admin()
+    conn = db()
+    reservation = conn.execute("SELECT * FROM reservations WHERE id = ?", (reservation_id,)).fetchone()
+    if not reservation:
+        conn.close()
+        return jsonify({"ok": False, "error": "Reservation not found."}), 404
+    if reservation["status"] == "completed":
+        conn.close()
+        return jsonify({"ok": False, "error": "This reservation is already completed and can't be reverted."}), 400
+    if reservation["status"] == "confirmed":
+        conn.close()
+        return jsonify({
+            "ok": True,
+            "reservation": {"id": reservation["id"], "guest_name": reservation["guest_name"], "status": "confirmed"},
+            "email_sent": False, "sms_sent": False,
+        })
+
+    if reservation["table_id"]:
+        table = conn.execute("SELECT area FROM restaurant_tables WHERE id=?", (reservation["table_id"],)).fetchone()
+        if table and table["area"] == "Bar":
+            conn.execute("DELETE FROM reservation_tables WHERE reservation_id=?", (reservation_id,))
+
+    conn.execute("UPDATE reservations SET status='confirmed', seated_at=NULL, completed_at=NULL WHERE id=?", (reservation_id,))
+    conn.commit()
+    updated = conn.execute("SELECT * FROM reservations WHERE id = ?", (reservation_id,)).fetchone()
+    conn.close()
+
+    email_sent = send_reservation_email(updated, "confirmed")
+    sms_sent = send_reservation_sms(updated, "confirmed")
+
+    return jsonify({
+        "ok": True,
+        "reservation": {
+            "id": updated["id"],
+            "guest_name": updated["guest_name"],
+            "party_size": updated["party_size"],
+            "reservation_at": updated["reservation_at"],
+            "status": updated["status"],
+        },
+        "email_sent": email_sent,
+        "sms_sent": sms_sent,
+    })
+
+
 @app.get("/confirmation/<reservation_id>")
 def confirmation(reservation_id):
     conn = db()
