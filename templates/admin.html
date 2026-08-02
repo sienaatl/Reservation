@@ -74,11 +74,19 @@
           </form>
           <div class="reservation-actions">
             <span class="confirmation-code">{{ r.id }}</span>
-            <a class="edit-reservation-button" href="{{ url_for('edit_reservation', reservation_id=r.id, pin=pin) }}">Edit</a>
-            <form method="post" action="{{ url_for('admin_resend_email', reservation_id=r.id) }}" class="inline-action-form">
-              <input type="hidden" name="pin" value="{{ pin }}">
-              <button type="submit" class="small-action-button">Resend Email</button>
-            </form>
+            <div class="action-buttons">
+              <a class="edit-reservation-button" href="{{ url_for('edit_reservation', reservation_id=r.id, pin=pin) }}">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
+                Edit
+              </a>
+              <form method="post" action="{{ url_for('admin_resend_email', reservation_id=r.id) }}" class="inline-action-form">
+                <input type="hidden" name="pin" value="{{ pin }}">
+                <button type="submit" class="small-action-button">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 6-10 7L2 6"/></svg>
+                  Resend Email
+                </button>
+              </form>
+            </div>
           </div>
         </article>
         {% endmacro %}
