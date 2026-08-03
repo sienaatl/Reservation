@@ -16,13 +16,25 @@
       <input type="hidden" name="confirm_hours" value="0">
 
       <h2>Operating Hours</h2>
-      <label>Opening time (24h)
-        <input type="number" name="open_hour" min="0" max="23" value="{{ settings.get('open_hour','') }}" data-original="{{ settings.get('open_hour','') }}" required>
-      </label>
-      <label>Closing time (24h)
-        <input type="number" name="close_hour" min="0" max="23" value="{{ settings.get('close_hour','') }}" data-original="{{ settings.get('close_hour','') }}" required>
-      </label>
-      <p class="muted-copy">Changes apply immediately to new bookings and the Timeline — no restart needed. Existing reservations are never modified automatically; any that fall outside new hours are flagged, not changed.</p>
+      <div class="hours-week">
+        {% for day in range(7) %}
+        {% set row = business_hours.get(day, {}) %}
+        <div class="hours-day-row" data-day="{{ day }}">
+          <span class="hours-day-label">{{ weekday_labels[day] }}</span>
+          <label class="hours-closed-toggle">
+            <input type="checkbox" name="day_{{ day }}_closed" value="1"
+                   data-original="{{ '1' if row.get('is_closed') else '0' }}"
+                   {% if row.get('is_closed') %}checked{% endif %}
+                   onchange="toggleHoursDayClosed(this)">
+            Closed
+          </label>
+          <input type="time" name="day_{{ day }}_open" value="{{ row.get('open_time','') }}" data-original="{{ row.get('open_time','') }}" {% if row.get('is_closed') %}disabled{% endif %}>
+          <span class="hours-range-sep">to</span>
+          <input type="time" name="day_{{ day }}_close" value="{{ row.get('close_time','') }}" data-original="{{ row.get('close_time','') }}" {% if row.get('is_closed') %}disabled{% endif %}>
+        </div>
+        {% endfor %}
+      </div>
+      <p class="muted-copy">A closing time at or before the opening time (e.g. 4:00 PM–12:00 AM) is treated as closing past midnight. Changes apply immediately to new bookings and the Timeline — no restart needed. Existing reservations are never modified automatically; any that fall outside new hours are flagged, not changed.</p>
 
       <h2>Availability &amp; pacing</h2>
       {% for key,label in [('max_covers_per_slot','Maximum covers per slot'),('min_notice_minutes','Minimum advance notice (minutes)'),('booking_window_days','Booking window (days)'),('late_hold_minutes','Late-arrival hold before auto no-show (minutes)'),('same_day_cutoff_minutes','Same-day booking cutoff (minutes before slot)')] %}
@@ -47,6 +59,18 @@
 </section>
 
 <script>
+// Flips a day's open/close time inputs between enabled and disabled as the
+// "Closed" checkbox for that row is toggled. Disabled inputs aren't
+// submitted with the form, which is what lets a closed day skip the
+// open/close validation server-side (see parse_hours_form in app.py).
+function toggleHoursDayClosed(checkbox) {
+  const row = checkbox.closest('.hours-day-row');
+  row.classList.toggle('is-closed', checkbox.checked);
+  row.querySelectorAll('input[type="time"]').forEach(function (input) {
+    input.disabled = checkbox.checked;
+  });
+}
+
 // Warn before saving operating-hours changes that would leave existing
 // reservations outside the new window. A native confirm() dialog, backed by
 // a live count from /settings/hours-impact. Falls through to a normal submit
@@ -56,27 +80,45 @@
   if (!form) return;
   const confirmField = form.querySelector('[name="confirm_hours"]');
 
+  function currentHoursParams() {
+    const params = new URLSearchParams();
+    let changed = false;
+    for (let day = 0; day < 7; day++) {
+      const closedInput = form.querySelector(`[name="day_${day}_closed"]`);
+      const openInput = form.querySelector(`[name="day_${day}_open"]`);
+      const closeInput = form.querySelector(`[name="day_${day}_close"]`);
+      const closed = closedInput.checked ? '1' : '0';
+      params.set(`day_${day}_closed`, closed);
+      params.set(`day_${day}_open`, openInput.value);
+      params.set(`day_${day}_close`, closeInput.value);
+      if (closed !== closedInput.dataset.original
+          || openInput.value !== openInput.dataset.original
+          || closeInput.value !== closeInput.dataset.original) {
+        changed = true;
+      }
+    }
+    return { params, changed };
+  }
+
   form.addEventListener('submit', async function (e) {
     if (confirmField.value === '1') return; // already confirmed, let it through
 
-    const openInput = form.querySelector('[name="open_hour"]');
-    const closeInput = form.querySelector('[name="close_hour"]');
-    const openHour = openInput.value;
-    const closeHour = closeInput.value;
-    if (!openHour || !closeHour) return; // let server-side validation handle it
-
     // Only check impact when hours are actually changing -- avoids a pointless
     // confirm() popup on every settings save when only pacing fields changed.
-    if (openHour === openInput.dataset.original && closeHour === closeInput.dataset.original) return;
+    const { params, changed } = currentHoursParams();
+    if (!changed) return;
 
     e.preventDefault();
     try {
-      const res = await fetch(`/settings/hours-impact?open_hour=${encodeURIComponent(openHour)}&close_hour=${encodeURIComponent(closeHour)}`);
+      const res = await fetch(`/settings/hours-impact?${params.toString()}`);
       const data = await res.json();
       if (data.count && data.count > 0) {
         const ok = confirm(`Changing operating hours will leave ${data.count} existing reservation(s) outside the new schedule. Continue?`);
         if (!ok) return;
       }
+      // On data.error (e.g. a day left with an empty time), fall through to a
+      // normal submit so server-side validation renders the flash message --
+      // returning here would silently swallow the click with no feedback.
     } catch (err) {
       // Impact check failed (e.g. offline) -- fall through to normal submit;
       // server-side validation still guards against bad hour values.
