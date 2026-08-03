@@ -1469,6 +1469,30 @@ def availability():
     })
 
 
+@app.get("/api/hours")
+def api_hours():
+    """Public, read-only per-day operating-hours schedule -- lets the AI
+    phone agent (or the public website) check whether Siena is open on a
+    given day without a PIN, same auth model as /api/availability. Mirrors
+    the business_hours table set from the Settings page."""
+    conn = db()
+    rows = conn.execute("SELECT * FROM business_hours ORDER BY day_of_week").fetchall()
+    conn.close()
+    return jsonify({
+        "hours": [
+            {
+                "day_of_week": r["day_of_week"],
+                "day": WEEKDAY_LABELS[r["day_of_week"]],
+                "closed": bool(r["is_closed"]),
+                "open_time": r["open_time"],
+                "close_time": r["close_time"],
+                "closes_next_day": bool(r["closes_next_day"]),
+            }
+            for r in rows
+        ]
+    })
+
+
 def _create_reservation(guest_name, email, phone, party_size, reservation_at_raw,
                          occasion, notes, sms_opt_in, marketing_opt_in):
     """Shared booking logic used by both the HTML form (/book) and the JSON
