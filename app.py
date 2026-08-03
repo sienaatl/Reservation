@@ -1085,11 +1085,15 @@ def audit_page():
 
 @app.get("/")
 def index():
-    # Guests now book through sienaatl.com's own form (which calls
-    # /api/book directly) instead of this app's guest page. The endpoint
-    # name "index" is kept so url_for("index") still resolves for /book's
-    # existing error-redirect paths -- only the rendered page is gone.
-    return redirect("https://sienaatl.com")
+    # This app is the staff dashboard, not a guest-facing site (guests book
+    # through sienaatl.com's own form, which calls /api/book directly) --
+    # so the root URL is a staff entry point: straight to the dashboard if
+    # already signed in, otherwise straight to login. The endpoint name
+    # "index" is kept so url_for("index") still resolves for /book's
+    # existing error-redirect paths.
+    if current_staff():
+        return redirect(url_for("admin"))
+    return redirect(url_for("staff_login"))
 
 
 @app.get("/api/availability")
