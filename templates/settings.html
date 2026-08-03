@@ -37,7 +37,12 @@
 
   <div class="ops-grid">
     <form method="post" action="{{ url_for('add_staff_user') }}" class="panel form-grid"><h2>Add staff account</h2><label>Username<input name="username" required></label><label>Password<div class="password-field"><input type="password" name="password" minlength="10" required><button type="button" class="password-toggle" aria-label="Show password" onclick="togglePasswordVisibility(this)">👁</button></div></label><label>Role<select name="role"><option>host</option><option>server</option><option>manager</option></select></label><button class="seat-action">Create Account</button></form>
-    <section class="panel"><h2>Staff accounts</h2>{% for u in users %}<div class="ops-row"><div><strong>{{ u.username }}</strong><small>{{ u.role }} · last login {{ u.last_login_at or 'Never' }}</small></div></div>{% endfor %}</section>
+    <section class="panel"><h2>Staff accounts</h2>{% for u in users %}<div class="ops-row"><div><strong>{{ u.username }}</strong><small>{{ u.role }} · last login {{ u.last_login_at or 'Never' }}</small></div>
+      <form method="post" action="{{ url_for('change_staff_password', user_id=u.id) }}" class="staff-password-form">
+        <div class="password-field"><input type="password" name="password" placeholder="New password" minlength="10" required><button type="button" class="password-toggle" aria-label="Show password" onclick="togglePasswordVisibility(this)">👁</button></div>
+        <button type="submit" class="small-action-button">Update password</button>
+      </form>
+    </div>{% endfor %}</section>
   </div>
 </section>
 

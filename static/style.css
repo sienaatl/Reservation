@@ -146,7 +146,7 @@ small{color:var(--muted)}
 .sms-consent{display:flex!important;align-items:flex-start;gap:9px;font-size:12px;line-height:1.45;color:var(--muted)}
 .sms-consent input{width:auto!important;margin-top:3px}
 
-.login-shell{min-height:calc(100vh - 72px);display:flex;align-items:center;justify-content:center;padding:20px}.login-card{display:grid;gap:15px;max-width:480px;width:100%}.nav-logout{background:transparent;border:0;color:inherit;font:inherit;cursor:pointer;padding:0}.table-scroll{overflow:auto}.table-scroll table{width:100%;border-collapse:collapse}.table-scroll th,.table-scroll td{padding:10px;border-bottom:1px solid var(--line);text-align:left;font-size:13px}
+.login-shell{min-height:calc(100vh - 72px);display:flex;align-items:center;justify-content:center;padding:20px}.login-card{display:grid;gap:15px;max-width:480px;width:100%}.nav-logout{display:inline-flex;align-items:center;gap:6px;background:#f8dedc;color:#8a2525;border:0;border-radius:8px;padding:8px 14px;font:inherit;font-weight:700;font-size:13px;cursor:pointer}.nav-logout:hover{background:#f3cdc9}.nav-logout svg{width:14px;height:14px}.table-scroll{overflow:auto}.table-scroll table{width:100%;border-collapse:collapse}.table-scroll th,.table-scroll td{padding:10px;border-bottom:1px solid var(--line);text-align:left;font-size:13px}
 
 /* .admin-shell/.admin-heading are used by admin.html, settings.html,
    guests.html, timeline.html, manager.html, waitlist.html, servers.html, and
@@ -187,6 +187,10 @@ small{color:var(--muted)}
 .password-field{position:relative}
 .password-field input{padding-right:44px}
 .password-toggle{position:absolute;top:50%;right:8px;transform:translateY(-50%);width:auto;border:0;background:none;cursor:pointer;font-size:16px;padding:4px;line-height:1;color:var(--muted)}
+.staff-password-form{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.staff-password-form .password-field{width:200px}
+.staff-password-form .password-field input{padding:9px 40px 9px 10px;font-size:12px}
+.staff-password-form .small-action-button{white-space:nowrap}
 
 /* Operating-hours warning badges: reservation list, timeline, floor plan. */
 .hours-warning{display:inline-block;margin-top:4px;background:#fde8e7;color:#81201d;border-radius:999px;padding:3px 9px;font-size:11px;font-weight:700}
