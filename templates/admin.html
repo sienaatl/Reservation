@@ -35,7 +35,7 @@
             <p>{{ date_str }}</p>
           </div>
           <form method="get" class="dashboard-filter">
-            <input type="hidden" name="pin" value="{{ pin }}">
+            <input type="hidden" name="pin" value="{{ pin or '' }}">
             <input type="date" name="date" value="{{ date_str }}" onchange="this.form.submit()">
             <select name="status" onchange="this.form.submit()">
               {% for value,label in [('all','All statuses'),('confirmed','Confirmed'),('seated','Seated'),('walk_in','Walk-ins'),('completed','Completed'),('cancelled','Cancelled'),('no_show','No-show')] %}
@@ -61,16 +61,16 @@
             <span class="status-pill-row status-pill-{{ r.status }}">{{ r.status.replace('_',' ').title() }}</span>
             <span class="row-quick-actions" onclick="event.stopPropagation()">
               <form class="quick-status-form" method="post" action="{{ url_for('update_status', reservation_id=r.id) }}" data-target-status="seated">
-                <input type="hidden" name="pin" value="{{ pin }}"><input type="hidden" name="date" value="{{ date_str }}"><input type="hidden" name="status" value="seated">
+                <input type="hidden" name="pin" value="{{ pin or '' }}"><input type="hidden" name="date" value="{{ date_str }}"><input type="hidden" name="status" value="seated">
                 <button type="submit" class="icon-action-button" data-quick="seat" title="Seat">🪑</button>
               </form>
               <form class="quick-status-form" method="post" action="{{ url_for('update_status', reservation_id=r.id) }}" data-target-status="completed">
-                <input type="hidden" name="pin" value="{{ pin }}"><input type="hidden" name="date" value="{{ date_str }}"><input type="hidden" name="status" value="completed">
+                <input type="hidden" name="pin" value="{{ pin or '' }}"><input type="hidden" name="date" value="{{ date_str }}"><input type="hidden" name="status" value="completed">
                 <button type="submit" class="icon-action-button" data-quick="complete" title="Complete">✅</button>
               </form>
               <a class="icon-action-button" href="{{ url_for('edit_reservation', reservation_id=r.id, pin=pin) }}" title="Edit">✏️</a>
               <form method="post" action="{{ url_for('admin_resend_email', reservation_id=r.id) }}" class="inline-action-form">
-                <input type="hidden" name="pin" value="{{ pin }}">
+                <input type="hidden" name="pin" value="{{ pin or '' }}">
                 <button type="submit" class="icon-action-button" title="Resend Email">📧</button>
               </form>
             </span>
@@ -142,7 +142,7 @@
 
 <dialog id="new-booking" class="booking-dialog">
   <form method="post" action="{{ url_for('admin_create_reservation') }}">
-    <input type="hidden" name="pin" value="{{ pin }}"><input type="hidden" name="date" value="{{ date_str }}">
+    <input type="hidden" name="pin" value="{{ pin or '' }}"><input type="hidden" name="date" value="{{ date_str }}">
     <div class="dialog-head"><div><p class="eyebrow">HOST ENTRY</p><h2>New Reservation</h2></div><button type="button" class="dialog-close" onclick="this.closest('dialog').close()">×</button></div>
     <div class="dialog-grid">
       <label>Guest name<input name="guest_name" required></label>
