@@ -24,7 +24,7 @@
       <a href="{{ url_for('servers_page') }}">Servers</a>
       <a href="{{ url_for('guests_page') }}">Guests</a>
       {% endif %}
-    {% if session.get('staff_user_id') %}<a href="{{ url_for('settings_page') }}">Settings</a><a href="{{ url_for('audit_page') }}">Audit</a><form method="post" action="{{ url_for('staff_logout') }}" style="display:inline"><button class="nav-logout">Sign out</button></form>{% endif %}</nav>
+    {% if session.get('staff_user_id') %}<a href="{{ url_for('settings_page') }}">Settings</a><a href="{{ url_for('audit_page') }}">Audit</a><form method="post" action="{{ url_for('staff_logout') }}" style="display:inline"><button class="nav-logout"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>Sign out</button></form>{% endif %}</nav>
   </header>
   <main>{% block content %}{% endblock %}</main>
   <script>

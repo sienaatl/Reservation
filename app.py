@@ -1056,6 +1056,32 @@ def settings_page():
     return render_template("settings.html", settings=settings, closures=closures, users=users, app_name=APP_NAME)
 
 
+@app.post("/settings/staff/<int:user_id>/password")
+@role_required("manager")
+def change_staff_password(user_id):
+    """Lets a manager set a new password for any staff account, including
+    their own -- the account list on Settings includes every role, so this
+    single action covers both "reset another staff member's password" and
+    "change my own password"."""
+    new_password = request.form.get("password", "")
+    if len(new_password) < 10:
+        flash("New password must be at least 10 characters.", "error")
+        return redirect(url_for("settings_page"))
+    conn = db()
+    existing = conn.execute("SELECT username FROM staff_users WHERE id=?", (user_id,)).fetchone()
+    if not existing:
+        conn.close()
+        flash("Staff account not found.", "error")
+        return redirect(url_for("settings_page"))
+    conn.execute("UPDATE staff_users SET password_hash=? WHERE id=?",
+                 (generate_password_hash(new_password), user_id))
+    conn.commit()
+    conn.close()
+    audit("change_staff_password", "staff_user", user_id, {"username": existing["username"]})
+    flash(f"Password updated for {existing['username']}.", "success")
+    return redirect(url_for("settings_page"))
+
+
 @app.post("/settings/staff")
 @role_required("manager")
 def add_staff_user():
