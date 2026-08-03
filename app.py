@@ -563,20 +563,24 @@ Siena Restaurant and Bar
     return send_email(reservation["email"], subject, html_body, text_body)
 
 
-def normalize_us_phone(value: str) -> str:
+def normalize_phone(value: str) -> str:
+    """Best-effort E.164 formatting. A bare 10-digit number is assumed US
+    (+1); anything else without a leading "+" is assumed to already include
+    a country code (e.g. "923155198221") rather than silently dropped, since
+    guests and the phone agent won't always type the "+"."""
     digits = "".join(ch for ch in (value or "") if ch.isdigit())
     if len(digits) == 10:
         return "+1" + digits
     if len(digits) == 11 and digits.startswith("1"):
         return "+" + digits
-    if value and value.startswith("+") and 10 <= len(digits) <= 15:
+    if 10 <= len(digits) <= 15:
         return "+" + digits
     return ""
 
 
 def send_sms(to_phone: str, body: str) -> bool:
     """Send SMS through Twilio. Reservation actions still succeed if SMS is unavailable."""
-    recipient = normalize_us_phone(to_phone)
+    recipient = normalize_phone(to_phone)
     if not SMS_ENABLED or not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN or not TWILIO_PHONE_NUMBER:
         app.logger.warning("SMS not sent: Twilio is disabled or credentials are missing.")
         return False
@@ -752,7 +756,7 @@ def guest_message_task():
 
 @app.post("/twilio/incoming")
 def twilio_incoming():
-    phone = normalize_us_phone(request.form.get("From", ""))
+    phone = normalize_phone(request.form.get("From", ""))
     body = request.form.get("Body", "").strip().upper()
     if body in {"STOP", "STOPALL", "UNSUBSCRIBE", "CANCEL", "END", "QUIT"} and phone:
         conn = db()
