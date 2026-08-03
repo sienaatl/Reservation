@@ -184,6 +184,10 @@ small{color:var(--muted)}
 .reservation-group[open] .group-chevron{transform:rotate(180deg)}
 .reservation-group .empty-state{padding:10px 20px;text-align:left;color:var(--muted);font-size:12px}
 
+.password-field{position:relative}
+.password-field input{padding-right:44px}
+.password-toggle{position:absolute;top:50%;right:8px;transform:translateY(-50%);width:auto;border:0;background:none;cursor:pointer;font-size:16px;padding:4px;line-height:1;color:var(--muted)}
+
 /* Operating-hours warning badges: reservation list, timeline, floor plan. */
 .hours-warning{display:inline-block;margin-top:4px;background:#fde8e7;color:#81201d;border-radius:999px;padding:3px 9px;font-size:11px;font-weight:700}
 .reservation-row.outside-hours{border-left-color:#c0392b}

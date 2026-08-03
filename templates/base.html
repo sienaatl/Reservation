@@ -27,5 +27,14 @@
     {% if session.get('staff_user_id') %}<a href="{{ url_for('settings_page') }}">Settings</a><a href="{{ url_for('audit_page') }}">Audit</a><form method="post" action="{{ url_for('staff_logout') }}" style="display:inline"><button class="nav-logout">Sign out</button></form>{% endif %}</nav>
   </header>
   <main>{% block content %}{% endblock %}</main>
+  <script>
+    function togglePasswordVisibility(btn) {
+      const input = btn.previousElementSibling;
+      const showing = input.type === 'text';
+      input.type = showing ? 'password' : 'text';
+      btn.textContent = showing ? '👁' : '🙈';
+      btn.setAttribute('aria-label', showing ? 'Show password' : 'Hide password');
+    }
+  </script>
 </body>
 </html>
