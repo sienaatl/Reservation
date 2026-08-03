@@ -929,14 +929,25 @@ def generate_slots(date_str: str, party_size: int):
 
 
 def require_admin():
+    """Used by CRUD/API endpoints only (table actions, /api/*, /tasks/*, the
+    external agent integrations). Accepts a real staff session OR the
+    ADMIN_PIN, checked fresh on every request -- it does NOT create a
+    session, so a PIN-authenticated API call can never be used to reach the
+    dashboard pages themselves. See require_staff_login() for those."""
     if current_staff():
         return
     pin = request.headers.get("X-Admin-Pin") or request.args.get("pin") or request.form.get("pin")
     if pin == ADMIN_PIN:
-        session.permanent = True
-        session["staff_user_id"] = 0
-        session["staff_username"] = "legacy-pin"
-        session["staff_role"] = "manager"
+        return
+    abort(401)
+
+
+def require_staff_login():
+    """Used by the dashboard pages themselves (Admin, Manager, Floor Plan,
+    Timeline, Waitlist, Servers, Guests, Marketing). Real staff login only
+    -- the legacy ADMIN_PIN is intentionally not accepted here, so visiting
+    these URLs directly always requires a real username/password session."""
+    if current_staff():
         return
     abort(401)
 
@@ -1995,7 +2006,7 @@ def update_table_status(reservation_id):
 
 @app.get("/floorplan")
 def floorplan():
-    require_admin()
+    require_staff_login()
     return render_template(
         "floorplan.html",
         pin=request.args.get("pin"),
@@ -2066,7 +2077,7 @@ def admin_create_reservation():
 
 @app.route("/admin/reservations/<reservation_id>/edit", methods=["GET", "POST"])
 def edit_reservation(reservation_id):
-    require_admin()
+    require_staff_login()
     pin = request.args.get("pin") or request.form.get("pin")
     conn = db()
     reservation = conn.execute(
@@ -2216,7 +2227,7 @@ def sync_guest_profile(conn, reservation):
 
 @app.get("/timeline")
 def timeline():
-    require_admin()
+    require_staff_login()
     date_str = request.args.get("date") or datetime.now().strftime("%Y-%m-%d")
     # Read live from app_settings, not the startup env vars -- previously this
     # page kept showing the old hour range after a Settings change until the
@@ -2251,7 +2262,7 @@ def timeline():
 
 @app.route("/waitlist", methods=["GET", "POST"])
 def waitlist_page():
-    require_admin()
+    require_staff_login()
     pin = request.values.get("pin")
     conn = db()
     if request.method == "POST":
@@ -2338,7 +2349,7 @@ def waitlist_page():
 
 @app.route("/servers", methods=["GET", "POST"])
 def servers_page():
-    require_admin()
+    require_staff_login()
     pin = request.values.get("pin")
     conn = db()
     if request.method == "POST":
@@ -2381,7 +2392,7 @@ def servers_page():
 
 @app.route("/guests", methods=["GET", "POST"])
 def guests_page():
-    require_admin()
+    require_staff_login()
     pin = request.values.get("pin")
     conn = db()
     if request.method == "POST":
@@ -2527,7 +2538,7 @@ def export_guests_csv():
 
 @app.get("/manager")
 def manager_overview():
-    require_admin()
+    require_staff_login()
     date_str = request.args.get("date") or datetime.now().strftime("%Y-%m-%d")
     conn = db()
     stats = conn.execute("""
@@ -2563,7 +2574,7 @@ def manager_overview():
 
 @app.route("/marketing", methods=["GET", "POST"])
 def marketing_page():
-    require_admin()
+    require_staff_login()
     pin = request.values.get("pin")
     conn = db()
     if request.method == "POST":
@@ -2597,7 +2608,7 @@ def marketing_page():
 
 @app.get("/admin")
 def admin():
-    require_admin()
+    require_staff_login()
     date_str = request.args.get("date") or datetime.now().strftime("%Y-%m-%d")
     status_filter = request.args.get("status", "all")
     search = request.args.get("search", "").strip()

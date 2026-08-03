@@ -15,14 +15,14 @@
       <img class="brand-logo" src="{{ url_for('static', filename='siena-logo.png') }}" alt="Siena Restaurant and Bar">
     </a>
     <nav class="topnav">
-      {% if pin %}
-      <a href="{{ url_for('manager_overview', pin=pin) }}">Manager</a>
-      <a href="{{ url_for('floorplan', pin=pin) }}">Floor Plan</a>
-      <a href="{{ url_for('timeline', pin=pin) }}">Timeline</a>
-      <a href="{{ url_for('admin', pin=pin) }}">Reservations</a>
-      <a href="{{ url_for('waitlist_page', pin=pin) }}">Waitlist</a>
-      <a href="{{ url_for('servers_page', pin=pin) }}">Servers</a>
-      <a href="{{ url_for('guests_page', pin=pin) }}">Guests</a>
+      {% if session.get('staff_user_id') %}
+      <a href="{{ url_for('manager_overview') }}">Manager</a>
+      <a href="{{ url_for('floorplan') }}">Floor Plan</a>
+      <a href="{{ url_for('timeline') }}">Timeline</a>
+      <a href="{{ url_for('admin') }}">Reservations</a>
+      <a href="{{ url_for('waitlist_page') }}">Waitlist</a>
+      <a href="{{ url_for('servers_page') }}">Servers</a>
+      <a href="{{ url_for('guests_page') }}">Guests</a>
       {% endif %}
     {% if session.get('staff_user_id') %}<a href="{{ url_for('settings_page') }}">Settings</a><a href="{{ url_for('audit_page') }}">Audit</a><form method="post" action="{{ url_for('staff_logout') }}" style="display:inline"><button class="nav-logout">Sign out</button></form>{% endif %}</nav>
   </header>
