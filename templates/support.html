@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="admin-shell">
+  <div class="admin-heading">
+    <div><p class="eyebrow">AI phone agent</p><h1>AI Support Requests</h1></div>
+  </div>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}<div class="flash {{ category }}">{{ message }}</div>{% endfor %}
+  {% endwith %}
+
+  <div class="stats-grid">
+    <article><span>Open</span><strong>{{ stats.open or 0 }}</strong></article>
+    <article><span>In Progress</span><strong>{{ stats.in_progress or 0 }}</strong></article>
+    <article><span>Resolved</span><strong>{{ stats.resolved or 0 }}</strong></article>
+    <article><span>Closed</span><strong>{{ stats.closed or 0 }}</strong></article>
+  </div>
+
+  <form method="get" class="date-filter">
+    <select name="status" onchange="this.form.submit()">
+      <option value="all" {% if status_filter=='all' %}selected{% endif %}>All statuses</option>
+      {% for s in statuses %}<option value="{{ s }}" {% if status_filter==s %}selected{% endif %}>{{ s.replace('_',' ')|title }}</option>{% endfor %}
+    </select>
+    <select name="category" onchange="this.form.submit()">
+      <option value="all" {% if category_filter=='all' %}selected{% endif %}>All categories</option>
+      {% for c in categories %}<option value="{{ c }}" {% if category_filter==c %}selected{% endif %}>{{ c.replace('_',' ')|title }}</option>{% endfor %}
+    </select>
+    <input name="search" value="{{ search }}" placeholder="Search guest, phone, email or ticket ID">
+    <button type="submit">Filter</button>
+  </form>
+
+  <div class="support-layout">
+    <section class="panel">
+      <h2>Tickets</h2>
+      {% for t in tickets %}
+      <details class="ticket-row">
+        <summary>
+          <span class="ticket-id">{{ t.id }}</span>
+          <span class="ticket-priority {{ t.priority }}">{{ t.priority }}</span>
+          <span class="ticket-category">{{ t.category.replace('_',' ')|title }}</span>
+          <span class="row-name">{{ t.guest_name or 'Unnamed caller' }}</span>
+          <span class="status-pill-row ticket-status-{{ t.status }}">{{ t.status.replace('_',' ')|title }}</span>
+        </summary>
+        <div class="row-expanded">
+          {% if t.phone %}<div><b>Phone</b>{{ t.phone }}</div>{% endif %}
+          {% if t.email %}<div><b>Email</b>{{ t.email }}</div>{% endif %}
+          {% if t.reservation_id %}<div><b>Reservation</b>{{ t.reservation_id }}</div>{% endif %}
+          {% if t.query %}<div><b>Guest query</b>{{ t.query }}</div>{% endif %}
+          {% if t.error_details %}<div><b>Agent error</b>{{ t.error_details }}</div>{% endif %}
+          {% if t.resolution_notes %}<div><b>Resolution notes</b>{{ t.resolution_notes }}</div>{% endif %}
+          <div><b>Created</b>{{ t.created_at }}</div>
+          <div><b>Updated</b>{{ t.updated_at }}</div>
+          {% if t.resolved_at %}<div><b>Resolved</b>{{ t.resolved_at }}</div>{% endif %}
+        </div>
+        <form method="post" class="ticket-update-form">
+          <input type="hidden" name="ticket_id" value="{{ t.id }}">
+          <input type="hidden" name="redirect_status" value="{{ status_filter }}">
+          <input type="hidden" name="redirect_category" value="{{ category_filter }}">
+          <input type="hidden" name="redirect_search" value="{{ search }}">
+          <select name="status">
+            {% for s in statuses %}<option value="{{ s }}" {% if t.status==s %}selected{% endif %}>{{ s.replace('_',' ')|title }}</option>{% endfor %}
+          </select>
+          <input name="resolution_notes" placeholder="Resolution notes" value="{{ t.resolution_notes or '' }}">
+          <button type="submit" class="small-action-button">Update</button>
+        </form>
+      </details>
+      {% else %}
+      <div class="empty-state">No support tickets match these filters.</div>
+      {% endfor %}
+    </section>
+
+    <aside class="panel">
+      <div class="admin-heading" style="margin-bottom:14px">
+        <h2 style="margin:0">Notifications</h2>
+        {% if notifications %}
+        <form method="post" action="{{ url_for('mark_support_notifications_read') }}">
+          <button type="submit" class="small-action-button">Mark all read</button>
+        </form>
+        {% endif %}
+      </div>
+      {% for n in notifications %}
+      <div class="ops-row notification-row{% if not n.is_read %} unread{% endif %}">
+        <div><strong>{{ n.message }}</strong><small>{{ n.created_at }}</small></div>
+      </div>
+      {% else %}
+      <div class="empty-state">No notifications yet.</div>
+      {% endfor %}
+    </aside>
+  </div>
+</section>
+{% endblock %}
