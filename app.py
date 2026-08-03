@@ -286,6 +286,33 @@ def init_db():
         close_time TEXT,
         closes_next_day INTEGER NOT NULL DEFAULT 0
     );
+
+    CREATE TABLE IF NOT EXISTS support_tickets (
+        id TEXT PRIMARY KEY,
+        source TEXT NOT NULL DEFAULT 'ai_agent',
+        guest_name TEXT,
+        phone TEXT,
+        email TEXT,
+        reservation_id TEXT,
+        category TEXT NOT NULL DEFAULT 'general',
+        query TEXT,
+        error_details TEXT,
+        status TEXT NOT NULL DEFAULT 'open',
+        priority TEXT NOT NULL DEFAULT 'normal',
+        resolution_notes TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        resolved_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS support_notifications (
+        id SERIAL PRIMARY KEY,
+        ticket_id TEXT NOT NULL,
+        event TEXT NOT NULL,
+        message TEXT NOT NULL,
+        is_read INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL
+    );
     """)
     conn.commit()
 
@@ -917,6 +944,42 @@ def audit(action: str, entity_type: str = "", entity_id: str = "", details=None)
     conn.commit(); conn.close()
 
 
+SUPPORT_TICKET_STATUSES = ("open", "in_progress", "resolved", "closed")
+SUPPORT_TICKET_CATEGORIES = ("general", "booking_error", "complaint", "agent_error", "other")
+SUPPORT_TICKET_PRIORITIES = ("low", "normal", "high", "urgent")
+
+
+def new_ticket_id() -> str:
+    return "ST-" + uuid.uuid4().hex[:8].upper()
+
+
+def log_support_notification(ticket_id: str, event: str, message: str, conn=None) -> None:
+    """Appends one row to the notification log for a support ticket. Callers
+    that already hold an open connection/transaction (e.g. create_support_ticket)
+    pass it in via conn so the notification commits atomically with the
+    ticket change; callers without one (e.g. a later standalone status
+    update) get a short-lived connection of their own."""
+    owns_conn = conn is None
+    conn = conn or db()
+    conn.execute(
+        "INSERT INTO support_notifications(ticket_id, event, message, created_at) VALUES (?, ?, ?, ?)",
+        (ticket_id, event, message, datetime.now().isoformat(timespec="seconds"))
+    )
+    if owns_conn:
+        conn.commit()
+        conn.close()
+
+
+@app.context_processor
+def inject_unread_support_notifications():
+    if not current_staff():
+        return {}
+    conn = db()
+    count = conn.execute("SELECT COUNT(*) n FROM support_notifications WHERE is_read=0").fetchone()["n"]
+    conn.close()
+    return {"unread_support_notifications": count}
+
+
 LOGIN_RATE_LIMIT_WINDOW_MINUTES = 15
 LOGIN_RATE_LIMIT_MAX_PER_IP = 10
 LOGIN_RATE_LIMIT_MAX_PER_USERNAME = 5
@@ -1281,6 +1344,98 @@ def export_reservations():
 @role_required("manager")
 def audit_page():
     conn=db(); rows=conn.execute("SELECT * FROM audit_log ORDER BY id DESC LIMIT 500").fetchall(); conn.close(); return render_template("audit.html", rows=rows, app_name=APP_NAME)
+
+
+@app.route("/support", methods=["GET", "POST"])
+def support_page():
+    """AI Support Requests: tickets the phone agent files via
+    /api/support-requests (a guest query it couldn't resolve, or an error it
+    hit mid-action), plus a running notification log of ticket activity."""
+    require_staff_login()
+    conn = db()
+
+    if request.method == "POST":
+        ticket_id = request.form.get("ticket_id", "")
+        ticket = conn.execute("SELECT * FROM support_tickets WHERE id=?", (ticket_id,)).fetchone()
+        redirect_args = {
+            "status": request.form.get("redirect_status", "all"),
+            "category": request.form.get("redirect_category", "all"),
+            "search": request.form.get("redirect_search", ""),
+        }
+        if not ticket:
+            conn.close()
+            flash("Ticket not found.", "error")
+            return redirect(url_for("support_page", **redirect_args))
+
+        new_status = request.form.get("status", "")
+        resolution_notes = request.form.get("resolution_notes", "").strip()
+        if new_status not in SUPPORT_TICKET_STATUSES:
+            conn.close()
+            flash("Invalid status.", "error")
+            return redirect(url_for("support_page", **redirect_args))
+
+        now = datetime.now().isoformat(timespec="seconds")
+        resolved_at = now if new_status in ("resolved", "closed") else None
+        conn.execute("""
+            UPDATE support_tickets
+            SET status=?, resolution_notes=?, updated_at=?, resolved_at=?
+            WHERE id=?
+        """, (new_status, resolution_notes or ticket["resolution_notes"], now, resolved_at, ticket_id))
+        conn.commit()
+        log_support_notification(
+            ticket_id, "status_changed",
+            f"Ticket {ticket_id} marked {new_status.replace('_', ' ')} by {session.get('staff_username', 'staff')}."
+        )
+        audit("update_support_ticket", "support_ticket", ticket_id, {"status": new_status})
+        conn.close()
+        flash(f"Ticket {ticket_id} updated.", "success")
+        return redirect(url_for("support_page", **redirect_args))
+
+    status_filter = request.args.get("status", "all")
+    category_filter = request.args.get("category", "all")
+    search = request.args.get("search", "").strip()
+
+    query = "SELECT * FROM support_tickets WHERE 1=1"
+    params = []
+    if status_filter != "all":
+        query += " AND status = ?"; params.append(status_filter)
+    if category_filter != "all":
+        query += " AND category = ?"; params.append(category_filter)
+    if search:
+        query += " AND (lower(guest_name) LIKE ? OR lower(phone) LIKE ? OR lower(email) LIKE ? OR lower(id) LIKE ? OR lower(query) LIKE ?)"
+        needle = f"%{search.lower()}%"
+        params.extend([needle, needle, needle, needle, needle])
+    query += " ORDER BY created_at DESC LIMIT 200"
+    tickets = conn.execute(query, params).fetchall()
+
+    stats = conn.execute("""
+        SELECT
+            SUM(CASE WHEN status='open' THEN 1 ELSE 0 END) open,
+            SUM(CASE WHEN status='in_progress' THEN 1 ELSE 0 END) in_progress,
+            SUM(CASE WHEN status='resolved' THEN 1 ELSE 0 END) resolved,
+            SUM(CASE WHEN status='closed' THEN 1 ELSE 0 END) closed,
+            COUNT(*) total
+        FROM support_tickets
+    """).fetchone()
+
+    notifications = conn.execute("SELECT * FROM support_notifications ORDER BY id DESC LIMIT 30").fetchall()
+    conn.close()
+
+    return render_template(
+        "support.html", tickets=tickets, stats=stats, notifications=notifications,
+        status_filter=status_filter, category_filter=category_filter, search=search,
+        statuses=SUPPORT_TICKET_STATUSES, categories=SUPPORT_TICKET_CATEGORIES,
+        app_name=APP_NAME
+    )
+
+
+@app.post("/support/notifications/mark-read")
+def mark_support_notifications_read():
+    require_staff_login()
+    conn = db()
+    conn.execute("UPDATE support_notifications SET is_read=1 WHERE is_read=0")
+    conn.commit(); conn.close()
+    return redirect(url_for("support_page"))
 
 
 @app.get("/")
@@ -1769,6 +1924,58 @@ Siena Restaurant and Bar
         "email_sent": email_sent,
         "sms_sent": sms_sent,
     })
+
+
+@app.post("/api/support-requests")
+def api_create_support_request():
+    """Files a support ticket on behalf of the AI phone agent (via n8n) --
+    either a guest query it couldn't resolve, or an error it hit while
+    trying to complete an action (booking, update, cancel, etc). Not a
+    reservation action itself, so it doesn't touch the reservations table
+    except to optionally link a reservation_id for staff context. Returns a
+    ticket id staff can look up on the Support page."""
+    require_admin()
+    data = request.get_json(silent=True) or request.form or request.args
+
+    guest_name = (data.get("guest_name") or "").strip()
+    phone = (data.get("phone") or "").strip()
+    email = (data.get("email") or "").strip()
+    reservation_id = (data.get("reservation_id") or "").strip()
+    category = (data.get("category") or "general").strip().lower()
+    query = (data.get("query") or "").strip()
+    error_details = (data.get("error_details") or "").strip()
+    priority = (data.get("priority") or "normal").strip().lower()
+
+    if not query and not error_details:
+        return jsonify({"ok": False, "error": "Provide query and/or error_details describing the issue."}), 400
+    if category not in SUPPORT_TICKET_CATEGORIES:
+        category = "general"
+    if priority not in SUPPORT_TICKET_PRIORITIES:
+        priority = "normal"
+
+    ticket_id = new_ticket_id()
+    now = datetime.now().isoformat(timespec="seconds")
+    conn = db()
+    conn.execute("""
+        INSERT INTO support_tickets(
+            id, source, guest_name, phone, email, reservation_id, category,
+            query, error_details, status, priority, created_at, updated_at
+        ) VALUES (?, 'ai_agent', ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)
+    """, (ticket_id, guest_name, phone, email, reservation_id or None, category,
+          query, error_details, priority, now, now))
+    who = guest_name or phone or "an unnamed caller"
+    log_support_notification(
+        ticket_id, "created",
+        f"New {priority} {category.replace('_', ' ')} ticket {ticket_id} from {who}.",
+        conn=conn
+    )
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        "ok": True,
+        "ticket": {"id": ticket_id, "status": "open", "priority": priority, "category": category, "created_at": now}
+    }), 201
 
 
 @app.get("/confirmation/<reservation_id>")
