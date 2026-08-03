@@ -1355,51 +1355,30 @@ def audit_page():
     conn=db(); rows=conn.execute("SELECT * FROM audit_log ORDER BY id DESC LIMIT 500").fetchall(); conn.close(); return render_template("audit.html", rows=rows, app_name=APP_NAME)
 
 
-@app.route("/support", methods=["GET", "POST"])
+@app.get("/support")
 def support_page():
     """AI Support Requests: tickets the phone agent files via
     /api/support-requests (a guest query it couldn't resolve, or an error it
-    hit mid-action), plus a running notification log of ticket activity."""
+    hit mid-action). The ticket table + drawer are loaded client-side from
+    /api/support-tickets (like the Guests CRM page) so filtering and status
+    updates don't need a full page reload; only the notification log below
+    is still server-rendered on initial load."""
     require_staff_login()
     conn = db()
+    notifications = conn.execute("SELECT * FROM support_notifications ORDER BY id DESC LIMIT 30").fetchall()
+    conn.close()
+    return render_template(
+        "support.html", notifications=notifications,
+        statuses=SUPPORT_TICKET_STATUSES, categories=SUPPORT_TICKET_CATEGORIES,
+        app_name=APP_NAME
+    )
 
-    if request.method == "POST":
-        ticket_id = request.form.get("ticket_id", "")
-        ticket = conn.execute("SELECT * FROM support_tickets WHERE id=?", (ticket_id,)).fetchone()
-        redirect_args = {
-            "status": request.form.get("redirect_status", "all"),
-            "category": request.form.get("redirect_category", "all"),
-            "search": request.form.get("redirect_search", ""),
-        }
-        if not ticket:
-            conn.close()
-            flash("Ticket not found.", "error")
-            return redirect(url_for("support_page", **redirect_args))
 
-        new_status = request.form.get("status", "")
-        resolution_notes = request.form.get("resolution_notes", "").strip()
-        if new_status not in SUPPORT_TICKET_STATUSES:
-            conn.close()
-            flash("Invalid status.", "error")
-            return redirect(url_for("support_page", **redirect_args))
-
-        now = datetime.now().isoformat(timespec="seconds")
-        resolved_at = now if new_status in ("resolved", "closed") else None
-        conn.execute("""
-            UPDATE support_tickets
-            SET status=?, resolution_notes=?, updated_at=?, resolved_at=?
-            WHERE id=?
-        """, (new_status, resolution_notes or ticket["resolution_notes"], now, resolved_at, ticket_id))
-        conn.commit()
-        log_support_notification(
-            ticket_id, "status_changed",
-            f"Ticket {ticket_id} marked {new_status.replace('_', ' ')} by {session.get('staff_username', 'staff')}."
-        )
-        audit("update_support_ticket", "support_ticket", ticket_id, {"status": new_status})
-        conn.close()
-        flash(f"Ticket {ticket_id} updated.", "success")
-        return redirect(url_for("support_page", **redirect_args))
-
+@app.get("/api/support-tickets")
+def api_support_tickets():
+    """JSON ticket list + live counts backing the Support page's table and
+    drawer -- same require_admin() (PIN-or-session) auth as /api/guests."""
+    require_admin()
     status_filter = request.args.get("status", "all")
     category_filter = request.args.get("category", "all")
     search = request.args.get("search", "").strip()
@@ -1414,9 +1393,10 @@ def support_page():
         query += " AND (lower(guest_name) LIKE ? OR lower(phone) LIKE ? OR lower(email) LIKE ? OR lower(id) LIKE ? OR lower(query) LIKE ?)"
         needle = f"%{search.lower()}%"
         params.extend([needle, needle, needle, needle, needle])
-    query += " ORDER BY created_at DESC LIMIT 200"
-    tickets = conn.execute(query, params).fetchall()
+    query += " ORDER BY created_at DESC LIMIT 300"
 
+    conn = db()
+    tickets = conn.execute(query, params).fetchall()
     stats = conn.execute("""
         SELECT
             SUM(CASE WHEN status='open' THEN 1 ELSE 0 END) open,
@@ -1426,16 +1406,49 @@ def support_page():
             COUNT(*) total
         FROM support_tickets
     """).fetchone()
-
-    notifications = conn.execute("SELECT * FROM support_notifications ORDER BY id DESC LIMIT 30").fetchall()
     conn.close()
 
-    return render_template(
-        "support.html", tickets=tickets, stats=stats, notifications=notifications,
-        status_filter=status_filter, category_filter=category_filter, search=search,
-        statuses=SUPPORT_TICKET_STATUSES, categories=SUPPORT_TICKET_CATEGORIES,
-        app_name=APP_NAME
+    return jsonify({
+        "items": [dict(t) for t in tickets],
+        "stats": {key: (stats[key] or 0) for key in ("open", "in_progress", "resolved", "closed", "total")},
+    })
+
+
+@app.post("/support/<ticket_id>/status")
+def update_support_ticket_status(ticket_id):
+    """Staff-driven status/resolution-notes update from the Support page's
+    drawer. Session-only (no PIN) since it's a staff action, not an agent
+    one -- see update_status()/edit_reservation() for the same distinction
+    on the reservation side."""
+    require_staff_login()
+    conn = db()
+    ticket = conn.execute("SELECT * FROM support_tickets WHERE id=?", (ticket_id,)).fetchone()
+    if not ticket:
+        conn.close()
+        return jsonify({"ok": False, "error": "Ticket not found."}), 404
+
+    new_status = request.form.get("status", "")
+    resolution_notes = request.form.get("resolution_notes", "").strip()
+    if new_status not in SUPPORT_TICKET_STATUSES:
+        conn.close()
+        return jsonify({"ok": False, "error": "Invalid status."}), 400
+
+    now = datetime.now().isoformat(timespec="seconds")
+    resolved_at = now if new_status in ("resolved", "closed") else None
+    conn.execute("""
+        UPDATE support_tickets
+        SET status=?, resolution_notes=?, updated_at=?, resolved_at=?
+        WHERE id=?
+    """, (new_status, resolution_notes or ticket["resolution_notes"], now, resolved_at, ticket_id))
+    conn.commit()
+    log_support_notification(
+        ticket_id, "status_changed",
+        f"Ticket {ticket_id} marked {new_status.replace('_', ' ')} by {session.get('staff_username', 'staff')}."
     )
+    audit("update_support_ticket", "support_ticket", ticket_id, {"status": new_status})
+    updated = conn.execute("SELECT * FROM support_tickets WHERE id=?", (ticket_id,)).fetchone()
+    conn.close()
+    return jsonify({"ok": True, "ticket": dict(updated)})
 
 
 @app.post("/support/notifications/mark-read")
@@ -1444,7 +1457,7 @@ def mark_support_notifications_read():
     conn = db()
     conn.execute("UPDATE support_notifications SET is_read=1 WHERE is_read=0")
     conn.commit(); conn.close()
-    return redirect(url_for("support_page"))
+    return jsonify({"ok": True})
 
 
 @app.get("/")
