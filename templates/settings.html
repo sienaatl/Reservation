@@ -10,7 +10,7 @@
     {% for category, message in messages %}<div class="flash {{ category }}">{{ message }}</div>{% endfor %}
   {% endwith %}
 
-  <div class="ops-grid">
+  <div class="ops-grid hours-settings-grid">
     <form method="post" class="panel form-grid" id="hours-form">
       <input type="hidden" name="action" value="settings">
       <input type="hidden" name="confirm_hours" value="0">

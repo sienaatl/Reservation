@@ -192,16 +192,21 @@ small{color:var(--muted)}
 .staff-password-form .password-field input{padding:9px 40px 9px 10px;font-size:12px}
 .staff-password-form .small-action-button{white-space:nowrap}
 
-.hours-week{display:grid;gap:10px;margin-bottom:6px}
-.hours-day-row{display:flex;align-items:center;gap:14px;padding:10px 14px;border:1px solid var(--line);border-radius:12px;background:var(--cream)}
-.hours-day-label{flex:0 0 110px;font-weight:700}
-.hours-closed-toggle{display:flex!important;align-items:center;gap:6px;font-weight:600;color:var(--muted);flex:0 0 90px}
+/* The generic .ops-grid ratio (minmax(280px,.8fr) / 1.6fr) is shared with
+   manager/marketing/servers/waitlist, so it's widened just for this page's
+   first grid via .hours-settings-grid rather than changed globally -- the
+   day-by-day hours editor needs more room than a plain 2-field form did. */
+.hours-settings-grid{grid-template-columns:minmax(320px,1.15fr) minmax(0,1fr)}
+.hours-week{display:grid;gap:10px;margin-bottom:6px;min-width:0}
+.hours-day-row{display:flex;align-items:center;gap:10px;padding:10px 14px;border:1px solid var(--line);border-radius:12px;background:var(--cream);flex-wrap:wrap}
+.hours-day-label{flex:0 0 88px;font-weight:700}
+.hours-closed-toggle{display:flex!important;align-items:center;gap:6px;font-weight:600;color:var(--muted);flex:0 0 auto}
 .hours-closed-toggle input{width:auto!important}
-.hours-day-row input[type="time"]{width:auto;padding:9px 10px}
+.hours-day-row input[type="time"]{width:auto;min-width:0;flex:1 1 118px;max-width:150px;padding:9px 8px}
 .hours-day-row input[type="time"]:disabled{opacity:.4}
-.hours-range-sep{color:var(--muted);font-size:12px}
+.hours-range-sep{color:var(--muted);font-size:12px;flex:0 0 auto}
 .hours-day-row.is-closed{opacity:.6}
-@media(max-width:640px){.hours-day-row{flex-wrap:wrap}}
+@media(max-width:900px){.hours-settings-grid{grid-template-columns:1fr}}
 
 /* Operating-hours warning badges: reservation list, timeline, floor plan. */
 .hours-warning{display:inline-block;margin-top:4px;background:#fde8e7;color:#81201d;border-radius:999px;padding:3px 9px;font-size:11px;font-weight:700}
