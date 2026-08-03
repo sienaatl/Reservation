@@ -270,6 +270,14 @@ def init_db():
         details TEXT,
         created_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS login_attempts (
+        id SERIAL PRIMARY KEY,
+        ip_address TEXT NOT NULL,
+        username TEXT,
+        success INTEGER NOT NULL DEFAULT 0,
+        attempted_at TEXT NOT NULL
+    );
     """)
     conn.commit()
 
@@ -806,6 +814,56 @@ def audit(action: str, entity_type: str = "", entity_id: str = "", details=None)
     conn.commit(); conn.close()
 
 
+LOGIN_RATE_LIMIT_WINDOW_MINUTES = 15
+LOGIN_RATE_LIMIT_MAX_PER_IP = 10
+LOGIN_RATE_LIMIT_MAX_PER_USERNAME = 5
+
+
+def get_client_ip() -> str:
+    """Real client IP behind Coolify's reverse proxy. request.remote_addr
+    alone would just be the proxy's own address for every request, which
+    would make per-IP rate limiting useless."""
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.remote_addr or "unknown"
+
+
+def record_login_attempt(ip: str, username: str, success: bool) -> None:
+    conn = db()
+    conn.execute(
+        "INSERT INTO login_attempts(ip_address, username, success, attempted_at) VALUES (?, ?, ?, ?)",
+        (ip, username, 1 if success else 0, datetime.now().isoformat(timespec="seconds"))
+    )
+    # Keep the table small -- prune anything older than a day on every write
+    # rather than needing a separate cleanup task.
+    cutoff = (datetime.now() - timedelta(days=1)).isoformat(timespec="seconds")
+    conn.execute("DELETE FROM login_attempts WHERE attempted_at::timestamp < ?::timestamp", (cutoff,))
+    conn.commit()
+    conn.close()
+
+
+def is_login_rate_limited(ip: str, username: str) -> bool:
+    """Blocks further attempts if either this IP or this username has hit
+    too many recent failures. Checking both catches a single attacker
+    guessing many usernames from one IP, and an attacker guessing one
+    account's password from many IPs."""
+    conn = db()
+    window_start = (datetime.now() - timedelta(minutes=LOGIN_RATE_LIMIT_WINDOW_MINUTES)).isoformat(timespec="seconds")
+    ip_fails = conn.execute(
+        "SELECT COUNT(*) n FROM login_attempts WHERE ip_address=? AND success=0 AND attempted_at::timestamp >= ?::timestamp",
+        (ip, window_start)
+    ).fetchone()["n"]
+    user_fails = 0
+    if username:
+        user_fails = conn.execute(
+            "SELECT COUNT(*) n FROM login_attempts WHERE lower(username)=? AND success=0 AND attempted_at::timestamp >= ?::timestamp",
+            (username.lower(), window_start)
+        ).fetchone()["n"]
+    conn.close()
+    return ip_fails >= LOGIN_RATE_LIMIT_MAX_PER_IP or user_fails >= LOGIN_RATE_LIMIT_MAX_PER_USERNAME
+
+
 def current_staff():
     if not session.get("staff_user_id"):
         return None
@@ -964,13 +1022,22 @@ def staff_login():
     if request.method == "POST":
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
+        client_ip = get_client_ip()
+
+        if is_login_rate_limited(client_ip, username):
+            flash("Too many login attempts. Please wait a few minutes and try again.", "error")
+            return render_template("login.html", app_name=APP_NAME)
+
         conn = db(); user = conn.execute("SELECT * FROM staff_users WHERE username=? AND active=1", (username,)).fetchone()
         if user and check_password_hash(user["password_hash"], password):
+            record_login_attempt(client_ip, username, True)
             session.clear(); session.permanent = True
             session.update(staff_user_id=user["id"], staff_username=user["username"], staff_role=user["role"])
             conn.execute("UPDATE staff_users SET last_login_at=? WHERE id=?", (datetime.now().isoformat(timespec="seconds"), user["id"]))
             conn.commit(); conn.close(); audit("login", "staff_user", user["id"]); return redirect(request.args.get("next") or url_for("admin"))
-        conn.close(); flash("Invalid username or password.", "error")
+        conn.close()
+        record_login_attempt(client_ip, username, False)
+        flash("Invalid username or password.", "error")
     return render_template("login.html", app_name=APP_NAME)
 
 
