@@ -5,87 +5,220 @@
     <div><p class="eyebrow">AI phone agent</p><h1>AI Support Requests</h1></div>
   </div>
 
-  {% with messages = get_flashed_messages(with_categories=true) %}
-    {% for category, message in messages %}<div class="flash {{ category }}">{{ message }}</div>{% endfor %}
-  {% endwith %}
-
   <div class="stats-grid">
-    <article><span>Open</span><strong>{{ stats.open or 0 }}</strong></article>
-    <article><span>In Progress</span><strong>{{ stats.in_progress or 0 }}</strong></article>
-    <article><span>Resolved</span><strong>{{ stats.resolved or 0 }}</strong></article>
-    <article><span>Closed</span><strong>{{ stats.closed or 0 }}</strong></article>
+    <article><span>Open</span><strong id="stat-open">0</strong></article>
+    <article><span>In Progress</span><strong id="stat-in_progress">0</strong></article>
+    <article><span>Resolved</span><strong id="stat-resolved">0</strong></article>
+    <article><span>Closed</span><strong id="stat-closed">0</strong></article>
   </div>
 
-  <form method="get" class="date-filter">
-    <select name="status" onchange="this.form.submit()">
-      <option value="all" {% if status_filter=='all' %}selected{% endif %}>All statuses</option>
-      {% for s in statuses %}<option value="{{ s }}" {% if status_filter==s %}selected{% endif %}>{{ s.replace('_',' ')|title }}</option>{% endfor %}
-    </select>
-    <select name="category" onchange="this.form.submit()">
-      <option value="all" {% if category_filter=='all' %}selected{% endif %}>All categories</option>
-      {% for c in categories %}<option value="{{ c }}" {% if category_filter==c %}selected{% endif %}>{{ c.replace('_',' ')|title }}</option>{% endfor %}
-    </select>
-    <input name="search" value="{{ search }}" placeholder="Search guest, phone, email or ticket ID">
-    <button type="submit">Filter</button>
-  </form>
+  <div class="panel crm-toolbar">
+    <input id="ticket-search" type="search" placeholder="Search guest, phone, email or ticket ID" autocomplete="off">
+    <div class="crm-filters">
+      <select id="filter-status">
+        <option value="all">All statuses</option>
+        {% for s in statuses %}<option value="{{ s }}">{{ s.replace('_',' ')|title }}</option>{% endfor %}
+      </select>
+      <select id="filter-category">
+        <option value="all">All categories</option>
+        {% for c in categories %}<option value="{{ c }}">{{ c.replace('_',' ')|title }}</option>{% endfor %}
+      </select>
+    </div>
+  </div>
 
   <div class="support-layout">
-    <section class="panel">
-      <h2>Tickets</h2>
-      {% for t in tickets %}
-      <details class="ticket-row">
-        <summary>
-          <span class="ticket-id">{{ t.id }}</span>
-          <span class="ticket-priority {{ t.priority }}">{{ t.priority }}</span>
-          <span class="ticket-category">{{ t.category.replace('_',' ')|title }}</span>
-          <span class="row-name">{{ t.guest_name or 'Unnamed caller' }}</span>
-          <span class="status-pill-row ticket-status-{{ t.status }}">{{ t.status.replace('_',' ')|title }}</span>
-        </summary>
-        <div class="row-expanded">
-          {% if t.phone %}<div><b>Phone</b>{{ t.phone }}</div>{% endif %}
-          {% if t.email %}<div><b>Email</b>{{ t.email }}</div>{% endif %}
-          {% if t.reservation_id %}<div><b>Reservation</b>{{ t.reservation_id }}</div>{% endif %}
-          {% if t.query %}<div><b>Guest query</b>{{ t.query }}</div>{% endif %}
-          {% if t.error_details %}<div><b>Agent error</b>{{ t.error_details }}</div>{% endif %}
-          {% if t.resolution_notes %}<div><b>Resolution notes</b>{{ t.resolution_notes }}</div>{% endif %}
-          <div><b>Created</b>{{ t.created_at }}</div>
-          <div><b>Updated</b>{{ t.updated_at }}</div>
-          {% if t.resolved_at %}<div><b>Resolved</b>{{ t.resolved_at }}</div>{% endif %}
-        </div>
-        <form method="post" class="ticket-update-form">
-          <input type="hidden" name="ticket_id" value="{{ t.id }}">
-          <input type="hidden" name="redirect_status" value="{{ status_filter }}">
-          <input type="hidden" name="redirect_category" value="{{ category_filter }}">
-          <input type="hidden" name="redirect_search" value="{{ search }}">
-          <select name="status">
-            {% for s in statuses %}<option value="{{ s }}" {% if t.status==s %}selected{% endif %}>{{ s.replace('_',' ')|title }}</option>{% endfor %}
-          </select>
-          <input name="resolution_notes" placeholder="Resolution notes" value="{{ t.resolution_notes or '' }}">
-          <button type="submit" class="small-action-button">Update</button>
-        </form>
-      </details>
-      {% else %}
-      <div class="empty-state">No support tickets match these filters.</div>
-      {% endfor %}
-    </section>
+    <div class="panel crm-table-wrap">
+      <table class="crm-table">
+        <thead>
+          <tr>
+            <th>Ticket</th>
+            <th>Priority</th>
+            <th>Category</th>
+            <th>Guest</th>
+            <th>Status</th>
+            <th>Created</th>
+          </tr>
+        </thead>
+        <tbody id="ticket-tbody">
+          <tr><td colspan="6" class="crm-loading">Loading tickets…</td></tr>
+        </tbody>
+      </table>
+    </div>
 
     <aside class="panel">
       <div class="admin-heading" style="margin-bottom:14px">
         <h2 style="margin:0">Notifications</h2>
-        {% if notifications %}
-        <form method="post" action="{{ url_for('mark_support_notifications_read') }}">
-          <button type="submit" class="small-action-button">Mark all read</button>
-        </form>
-        {% endif %}
+        <button type="button" class="small-action-button" id="mark-notifications-read">Mark all read</button>
       </div>
-      {% for n in notifications %}
-      <div class="ops-row notification-row{% if not n.is_read %} unread{% endif %}">
-        <div><strong>{{ n.message }}</strong><small>{{ n.created_at }}</small></div>
+      <div id="notification-list">
+        {% for n in notifications %}
+        <div class="ops-row notification-row{% if not n.is_read %} unread{% endif %}">
+          <div><strong>{{ n.message }}</strong><small>{{ n.created_at }}</small></div>
+        </div>
+        {% else %}
+        <div class="empty-state">No notifications yet.</div>
+        {% endfor %}
       </div>
-      {% else %}
-      <div class="empty-state">No notifications yet.</div>
-      {% endfor %}
     </aside>
   </div>
 </section>
+
+<div id="ticket-drawer" class="crm-drawer" aria-hidden="true">
+  <div class="crm-drawer-backdrop" id="ticket-drawer-backdrop"></div>
+  <div class="crm-drawer-panel">
+    <div class="crm-drawer-head">
+      <h2 id="ticket-drawer-title">Ticket</h2>
+      <button type="button" class="dialog-close" id="ticket-drawer-close">×</button>
+    </div>
+
+    <div class="crm-drawer-grid">
+      <label>Guest name<input id="ticket-field-name" disabled></label>
+      <label>Phone<input id="ticket-field-phone" disabled></label>
+      <label class="crm-wide">Email<input id="ticket-field-email" disabled></label>
+      <label>Reservation<input id="ticket-field-reservation" disabled></label>
+      <label>Priority<input id="ticket-field-priority" disabled></label>
+      <label>Category<input id="ticket-field-category" disabled></label>
+      <label class="crm-wide">Guest query<textarea id="ticket-field-query" rows="3" disabled></textarea></label>
+      <label class="crm-wide">Agent error<textarea id="ticket-field-error" rows="3" disabled></textarea></label>
+      <label>Created<input id="ticket-field-created" disabled></label>
+      <label>Updated<input id="ticket-field-updated" disabled></label>
+    </div>
+
+    <form id="ticket-status-form">
+      <label>Status
+        <select id="ticket-field-status">
+          {% for s in statuses %}<option value="{{ s }}">{{ s.replace('_',' ')|title }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>Resolution notes<textarea id="ticket-field-resolution" rows="3" placeholder="What was done to resolve this?"></textarea></label>
+      <div class="crm-drawer-actions">
+        <button type="button" class="outline-button" id="ticket-drawer-cancel">Cancel</button>
+        <button type="submit" class="primary-button">Update Ticket</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+const state = { status: 'all', category: 'all', search: '' };
+let searchTimer = null;
+let currentTickets = [];
+
+function esc(value) {
+  return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function buildQuery() {
+  return new URLSearchParams({ status: state.status, category: state.category, search: state.search }).toString();
+}
+
+function rowHtml(t) {
+  return `
+    <tr data-id="${esc(t.id)}" class="crm-row">
+      <td>${esc(t.id)}</td>
+      <td><span class="ticket-priority ${esc(t.priority)}">${esc(t.priority)}</span></td>
+      <td>${esc((t.category || '').replace('_',' '))}</td>
+      <td>${esc(t.guest_name || 'Unnamed caller')}</td>
+      <td><span class="crm-status ticket-status-${esc(t.status)}">${esc((t.status || '').replace('_',' '))}</span></td>
+      <td>${esc(t.created_at)}</td>
+    </tr>`;
+}
+
+async function loadTickets() {
+  const tbody = document.getElementById('ticket-tbody');
+  tbody.innerHTML = '<tr><td colspan="6" class="crm-loading">Loading tickets…</td></tr>';
+  const response = await fetch(`/api/support-tickets?${buildQuery()}`);
+  const data = await response.json();
+  currentTickets = data.items || [];
+
+  if (!currentTickets.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No support tickets match these filters.</td></tr>';
+  } else {
+    tbody.innerHTML = currentTickets.map(rowHtml).join('');
+  }
+
+  const stats = data.stats || {};
+  document.getElementById('stat-open').textContent = stats.open || 0;
+  document.getElementById('stat-in_progress').textContent = stats.in_progress || 0;
+  document.getElementById('stat-resolved').textContent = stats.resolved || 0;
+  document.getElementById('stat-closed').textContent = stats.closed || 0;
+}
+
+document.getElementById('ticket-search').addEventListener('input', (e) => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => { state.search = e.target.value.trim(); loadTickets(); }, 300);
+});
+document.getElementById('filter-status').addEventListener('change', (e) => { state.status = e.target.value; loadTickets(); });
+document.getElementById('filter-category').addEventListener('change', (e) => { state.category = e.target.value; loadTickets(); });
+
+document.getElementById('ticket-tbody').addEventListener('click', (e) => {
+  const row = e.target.closest('tr[data-id]');
+  if (row) openDrawer(row.dataset.id);
+});
+
+const drawer = document.getElementById('ticket-drawer');
+let drawerTicketId = null;
+
+function openDrawer(id) {
+  const t = currentTickets.find(x => String(x.id) === String(id));
+  if (!t) return;
+  drawerTicketId = id;
+  drawer.classList.add('open');
+  drawer.setAttribute('aria-hidden', 'false');
+  document.getElementById('ticket-drawer-title').textContent = t.id;
+  document.getElementById('ticket-field-name').value = t.guest_name || '—';
+  document.getElementById('ticket-field-phone').value = t.phone || '—';
+  document.getElementById('ticket-field-email').value = t.email || '—';
+  document.getElementById('ticket-field-reservation').value = t.reservation_id || '—';
+  document.getElementById('ticket-field-priority').value = t.priority || '';
+  document.getElementById('ticket-field-category').value = (t.category || '').replace('_',' ');
+  document.getElementById('ticket-field-query').value = t.query || '';
+  document.getElementById('ticket-field-error').value = t.error_details || '';
+  document.getElementById('ticket-field-created').value = t.created_at || '';
+  document.getElementById('ticket-field-updated').value = t.updated_at || '';
+  document.getElementById('ticket-field-status').value = t.status;
+  document.getElementById('ticket-field-resolution').value = t.resolution_notes || '';
+}
+
+function closeDrawer() {
+  drawer.classList.remove('open');
+  drawer.setAttribute('aria-hidden', 'true');
+  drawerTicketId = null;
+}
+document.getElementById('ticket-drawer-close').addEventListener('click', closeDrawer);
+document.getElementById('ticket-drawer-cancel').addEventListener('click', closeDrawer);
+document.getElementById('ticket-drawer-backdrop').addEventListener('click', closeDrawer);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && drawer.classList.contains('open')) closeDrawer(); });
+
+document.getElementById('ticket-status-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if (!drawerTicketId) return;
+  const body = new URLSearchParams({
+    status: document.getElementById('ticket-field-status').value,
+    resolution_notes: document.getElementById('ticket-field-resolution').value,
+  });
+  const response = await fetch(`/support/${drawerTicketId}/status`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body,
+  });
+  const data = await response.json();
+  if (!response.ok || !data.ok) {
+    alert((data && data.error) || 'Unable to update ticket.');
+    return;
+  }
+  closeDrawer();
+  loadTickets();
+});
+
+document.getElementById('mark-notifications-read').addEventListener('click', async () => {
+  const response = await fetch('/support/notifications/mark-read', { method: 'POST' });
+  if (!response.ok) return;
+  document.querySelectorAll('.notification-row.unread').forEach(el => el.classList.remove('unread'));
+  const badge = document.getElementById('nav-support-badge');
+  if (badge) badge.remove();
+});
+
+loadTickets();
+</script>
 {% endblock %}
