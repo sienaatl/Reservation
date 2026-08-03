@@ -969,7 +969,7 @@ def staff_login():
             session.clear(); session.permanent = True
             session.update(staff_user_id=user["id"], staff_username=user["username"], staff_role=user["role"])
             conn.execute("UPDATE staff_users SET last_login_at=? WHERE id=?", (datetime.now().isoformat(timespec="seconds"), user["id"]))
-            conn.commit(); conn.close(); audit("login", "staff_user", user["id"]); return redirect(request.args.get("next") or url_for("manager_overview"))
+            conn.commit(); conn.close(); audit("login", "staff_user", user["id"]); return redirect(request.args.get("next") or url_for("admin"))
         conn.close(); flash("Invalid username or password.", "error")
     return render_template("login.html", app_name=APP_NAME)
 
@@ -1085,7 +1085,11 @@ def audit_page():
 
 @app.get("/")
 def index():
-    return render_template("index.html", app_name=APP_NAME)
+    # Guests now book through sienaatl.com's own form (which calls
+    # /api/book directly) instead of this app's guest page. The endpoint
+    # name "index" is kept so url_for("index") still resolves for /book's
+    # existing error-redirect paths -- only the rendered page is gone.
+    return redirect("https://sienaatl.com")
 
 
 @app.get("/api/availability")
