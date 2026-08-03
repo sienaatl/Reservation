@@ -59,7 +59,11 @@ BOOKING_LOCK_KEY = 782342
 # multiple gunicorn workers booting at once don't race on schema creation.
 INIT_DB_LOCK_KEY = 918273
 
-ALLOWED_ORIGIN = os.getenv("ALLOWED_ORIGIN", "")
+# Comma-separated list, e.g. "https://sienaatl.com,http://localhost:3000" --
+# lets a local dev build of the website call these endpoints too without
+# opening CORS up to any origin.
+ALLOWED_ORIGINS = {o.strip() for o in os.getenv("ALLOWED_ORIGIN", "").split(",") if o.strip()}
+CORS_API_PATHS = {"/api/book", "/api/availability", "/api/hours"}
 
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "change-me-in-production")
@@ -68,11 +72,16 @@ app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax", S
 
 @app.after_request
 def add_cors_headers(response):
-    # Only the public booking API is meant to be called from another origin.
-    if ALLOWED_ORIGIN and request.path == "/api/book":
-        response.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN
-        response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+    # Only the public-facing booking/availability/hours endpoints are meant
+    # to be called from another origin (the guest-facing website's own JS).
+    # The request's actual Origin is only ever reflected back if it's in the
+    # ALLOWED_ORIGINS allow-list -- never wildcarded.
+    origin = request.headers.get("Origin", "")
+    if request.path in CORS_API_PATHS and origin in ALLOWED_ORIGINS:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
         response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        response.headers["Vary"] = "Origin"
     return response
 
 
