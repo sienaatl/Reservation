@@ -142,6 +142,26 @@ async function loadTickets() {
   document.getElementById('stat-in_progress').textContent = stats.in_progress || 0;
   document.getElementById('stat-resolved').textContent = stats.resolved || 0;
   document.getElementById('stat-closed').textContent = stats.closed || 0;
+  updateNavBadge(stats.open || 0);
+}
+
+// Keeps the "Support" nav link's open-ticket-count badge live as tickets
+// are filed/resolved, without needing a page reload -- mirrors what the
+// server renders on the next full page load (open_support_tickets in
+// base.html), scoped to whichever tab currently has this page open.
+function updateNavBadge(openCount) {
+  const link = document.getElementById('nav-support-link');
+  if (!link) return;
+  let badge = document.getElementById('nav-support-badge');
+  if (openCount > 0) {
+    if (!badge) {
+      link.insertAdjacentHTML('beforeend', ` <span class="nav-badge" id="nav-support-badge"></span>`);
+      badge = document.getElementById('nav-support-badge');
+    }
+    badge.textContent = openCount;
+  } else if (badge) {
+    badge.remove();
+  }
 }
 
 document.getElementById('ticket-search').addEventListener('input', (e) => {
@@ -214,9 +234,9 @@ document.getElementById('ticket-status-form').addEventListener('submit', async (
 document.getElementById('mark-notifications-read').addEventListener('click', async () => {
   const response = await fetch('/support/notifications/mark-read', { method: 'POST' });
   if (!response.ok) return;
+  // Only clears the unread highlighting -- the nav badge is the open-ticket
+  // count now, unrelated to notification read state, so it's left alone.
   document.querySelectorAll('.notification-row.unread').forEach(el => el.classList.remove('unread'));
-  const badge = document.getElementById('nav-support-badge');
-  if (badge) badge.remove();
 });
 
 loadTickets();

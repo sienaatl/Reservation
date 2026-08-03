@@ -980,13 +980,17 @@ def log_support_notification(ticket_id: str, event: str, message: str, conn=None
 
 
 @app.context_processor
-def inject_unread_support_notifications():
+def inject_open_support_ticket_count():
+    """Powers the nav badge next to "Support" -- count of tickets still
+    needing attention (status='open'), not unread notifications. Kept live
+    client-side too: support.html updates this same badge after every
+    ticket list load/status change so it doesn't need a page reload."""
     if not current_staff():
         return {}
     conn = db()
-    count = conn.execute("SELECT COUNT(*) n FROM support_notifications WHERE is_read=0").fetchone()["n"]
+    count = conn.execute("SELECT COUNT(*) n FROM support_tickets WHERE status='open'").fetchone()["n"]
     conn.close()
-    return {"unread_support_notifications": count}
+    return {"open_support_tickets": count}
 
 
 LOGIN_RATE_LIMIT_WINDOW_MINUTES = 15
