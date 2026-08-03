@@ -466,6 +466,14 @@ def format_reservation_datetime(value: str) -> str:
     return parse_dt(value).strftime("%A, %B %-d, %Y at %-I:%M %p")
 
 
+def format_reservation_datetime_short(value: str) -> str:
+    """Compact day/date/time for SMS -- keeps message bodies short enough to
+    stay within a single ~153-char SMS segment so a link near the end of the
+    message doesn't get cut off by carriers that mishandle multi-part
+    concatenated SMS, which is common on some international routes."""
+    return parse_dt(value).strftime("%a %b %-d, %-I:%M %p")
+
+
 def send_email(to_email: str, subject: str, html_body: str, text_body: str) -> bool:
     """Send through any SMTP provider. Booking still succeeds if email is unavailable."""
     if not SMTP_HOST or not SMTP_FROM_EMAIL or not to_email:
@@ -598,32 +606,32 @@ def send_sms(to_phone: str, body: str) -> bool:
 
 
 def reservation_sms_text(reservation, kind: str = "confirmed") -> str:
-    date_text = format_reservation_datetime(reservation["reservation_at"])
+    # Kept deliberately short (target well under the ~153-char single-segment
+    # budget) everywhere a link is included -- a longer body forces Twilio to
+    # split the message into multiple concatenated SMS parts, and some
+    # international carrier routes drop or fail to reassemble later parts,
+    # which cuts off exactly the link at the end. See normalize_phone() for
+    # the related international-number fix.
+    date_text = format_reservation_datetime_short(reservation["reservation_at"])
     manage_link = public_url("guest_manage", token=reservation["manage_token"])
     name = reservation["guest_name"].split()[0]
+    party = reservation["party_size"]
     if kind == "cancelled":
-        return (f"Hi {name}, your Siena reservation for {date_text}, party of "
-                f"{reservation['party_size']}, has been cancelled. {RESTAURANT_PHONE}")
+        return f"Hi {name}, your Siena reservation for {date_text}, party {party}, is cancelled. {RESTAURANT_PHONE}"
     if kind == "updated":
-        return (f"Hi {name}, your Siena reservation is updated: {date_text}, party of "
-                f"{reservation['party_size']}. Manage: {manage_link}")
+        return f"Hi {name}, Siena updated: {date_text}, party {party}. {manage_link}"
     if kind == "reminder_24h":
-        return (f"Siena reminder: Hi {name}, your reservation is tomorrow at "
-                f"{parse_dt(reservation['reservation_at']).strftime('%-I:%M %p')} for "
-                f"{reservation['party_size']}. Manage: {manage_link}")
+        time_text = parse_dt(reservation["reservation_at"]).strftime("%-I:%M %p")
+        return f"Siena: {name}, tomorrow at {time_text}, party {party}. {manage_link}"
     if kind == "reminder_2h":
         late_link = public_url("running_late", token=reservation["manage_token"])
-        return (f"Siena reminder: Hi {name}, we look forward to seeing you in about 2 hours at "
-                f"{parse_dt(reservation['reservation_at']).strftime('%-I:%M %p')} for "
-                f"{reservation['party_size']}. Running late? {late_link}")
+        return f"Siena: {name}, ~2 hrs away, party {party}. Running late? {late_link}"
     if kind == "running_late":
         return (f"Thanks {name}. We marked you as running about {RUNNING_LATE_MINUTES} minutes late. "
                 f"Please call {RESTAURANT_PHONE} if your arrival changes.")
     if kind == "review":
-        return (f"Thank you for dining at Siena, {name}! We would appreciate your feedback: {REVIEW_URL} "
-                f"Reply STOP to opt out.")
-    return (f"Hi {name}, your Siena reservation is confirmed for {date_text}, party of "
-            f"{reservation['party_size']}. Manage or cancel: {manage_link}")
+        return f"Thanks for dining at Siena, {name}! Feedback: {REVIEW_URL} Reply STOP to opt out."
+    return f"Hi {name}, Siena confirmed {date_text}, party {party}. {manage_link}"
 
 
 def send_reservation_sms(reservation, kind: str = "confirmed") -> bool:
@@ -686,7 +694,7 @@ def sms_reminder_task():
     return jsonify({"ok": True, **process_sms_reminders(), **process_late_hold_no_shows()})
 
 
-@app.get("/reservation/<token>/running-late")
+@app.get("/late/<token>")
 def running_late(token):
     conn = db()
     reservation = conn.execute("SELECT * FROM reservations WHERE manage_token=?", (token,)).fetchone()
