@@ -278,6 +278,14 @@ def init_db():
         success INTEGER NOT NULL DEFAULT 0,
         attempted_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS business_hours (
+        day_of_week INTEGER PRIMARY KEY,
+        is_closed INTEGER NOT NULL DEFAULT 0,
+        open_time TEXT,
+        close_time TEXT,
+        closes_next_day INTEGER NOT NULL DEFAULT 0
+    );
     """)
     conn.commit()
 
@@ -412,6 +420,24 @@ def init_db():
 
     for server_name in ("Server 1", "Server 2", "Server 3", "Server 4"):
         conn.execute("INSERT INTO servers(name) VALUES (?) ON CONFLICT(name) DO NOTHING", (server_name,))
+
+    # day_of_week: 0=Monday ... 6=Sunday (matches Python's date.weekday()).
+    # Seeded once from Siena's real published hours; managers can change any
+    # day from Settings afterward, so this only matters for a fresh database.
+    business_hours_defaults = [
+        (0, 1, None,    None,    0),  # Monday: closed
+        (1, 0, "16:00", "22:00", 0),  # Tuesday
+        (2, 0, "16:00", "22:00", 0),  # Wednesday
+        (3, 0, "16:00", "22:00", 0),  # Thursday
+        (4, 0, "16:00", "00:00", 1),  # Friday, closes past midnight
+        (5, 0, "16:00", "00:00", 1),  # Saturday, closes past midnight
+        (6, 0, "16:00", "22:00", 0),  # Sunday
+    ]
+    conn.executemany("""
+        INSERT INTO business_hours(day_of_week, is_closed, open_time, close_time, closes_next_day)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(day_of_week) DO NOTHING
+    """, business_hours_defaults)
 
     defaults = {
         "open_hour": str(OPEN_HOUR), "close_hour": str(CLOSE_HOUR),
@@ -787,23 +813,88 @@ def get_setting(key: str, default=None):
     return row["value"] if row else default
 
 
-def count_reservations_outside_hours(open_hour: int, close_hour: int) -> int:
-    """Count upcoming, active reservations whose clock time would fall outside
-    the given operating hours. Used to warn admins before an hours change, and
-    shares its "outside hours" math with the badge queries in admin/timeline/
-    floorplan_data (kept inline there since each has a different table alias)."""
+WEEKDAY_LABELS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+
+def get_business_hours_map() -> dict:
+    """day_of_week (0=Monday..6=Sunday, matching date.weekday()) -> row."""
     conn = db()
-    row = conn.execute("""
-        SELECT COUNT(*) n FROM reservations
+    rows = conn.execute("SELECT * FROM business_hours ORDER BY day_of_week").fetchall()
+    conn.close()
+    return {r["day_of_week"]: r for r in rows}
+
+
+def hours_window_for_date(d, hours_map: dict):
+    """Return (open_datetime, close_datetime) the restaurant is open on date
+    d, or None if closed that day. close_datetime may fall on the next
+    calendar day for schedules that close past midnight (e.g. Fri/Sat
+    4pm-12am)."""
+    row = hours_map.get(d.weekday())
+    if not row or row["is_closed"] or not row["open_time"] or not row["close_time"]:
+        return None
+    open_h, open_m = (int(x) for x in row["open_time"].split(":"))
+    close_h, close_m = (int(x) for x in row["close_time"].split(":"))
+    start = datetime(d.year, d.month, d.day, open_h, open_m)
+    end = datetime(d.year, d.month, d.day, close_h, close_m)
+    if row["closes_next_day"]:
+        end += timedelta(days=1)
+    return start, end
+
+
+def is_outside_business_hours(reservation_at: str, hours_map: dict) -> bool:
+    at = parse_dt(reservation_at)
+    window = hours_window_for_date(at.date(), hours_map)
+    if not window:
+        return True
+    start, end = window
+    return at < start or at >= end
+
+
+def parse_hours_form(values) -> dict | None:
+    """Parses the 7-day Operating Hours form (or the matching query-string
+    args used by the confirm-before-save impact check) into a
+    business_hours-shaped dict keyed by day_of_week, or None if any day's
+    input is invalid. A close time at or before the open time is treated as
+    crossing midnight (e.g. 16:00-00:00), so late closes like Friday/Saturday
+    need no separate "next day" control in the UI."""
+    result = {}
+    for day in range(7):
+        is_closed = values.get(f"day_{day}_closed") == "1"
+        if is_closed:
+            result[day] = {"is_closed": True, "open_time": None, "close_time": None, "closes_next_day": False}
+            continue
+        open_time = (values.get(f"day_{day}_open") or "").strip()
+        close_time = (values.get(f"day_{day}_close") or "").strip()
+        if not open_time or not close_time:
+            return None
+        try:
+            oh, om = (int(x) for x in open_time.split(":"))
+            ch, cm = (int(x) for x in close_time.split(":"))
+        except ValueError:
+            return None
+        if not (0 <= oh <= 23 and 0 <= om <= 59 and 0 <= ch <= 23 and 0 <= cm <= 59):
+            return None
+        closes_next_day = (ch * 60 + cm) <= (oh * 60 + om)
+        result[day] = {
+            "is_closed": False, "open_time": f"{oh:02d}:{om:02d}",
+            "close_time": f"{ch:02d}:{cm:02d}", "closes_next_day": closes_next_day
+        }
+    return result
+
+
+def count_reservations_outside_hours(hours_map: dict) -> int:
+    """Count upcoming, active reservations that would fall outside the given
+    (possibly proposed, not-yet-saved) per-day business-hours schedule. Used
+    to warn admins before an hours change, and shares its "outside hours"
+    math with the badge annotations in admin()/timeline()/floorplan_data()."""
+    conn = db()
+    rows = conn.execute("""
+        SELECT reservation_at FROM reservations
         WHERE status IN ('confirmed','seated','walk_in')
           AND reservation_at::timestamp >= ?::timestamp
-          AND (
-            EXTRACT(HOUR FROM reservation_at::timestamp) + EXTRACT(MINUTE FROM reservation_at::timestamp)/60.0 < ?
-            OR EXTRACT(HOUR FROM reservation_at::timestamp) + EXTRACT(MINUTE FROM reservation_at::timestamp)/60.0 >= ?
-          )
-    """, (datetime.now().isoformat(timespec="minutes"), open_hour, close_hour)).fetchone()
+    """, (datetime.now().isoformat(timespec="minutes"),)).fetchall()
     conn.close()
-    return row["n"]
+    return sum(1 for r in rows if is_outside_business_hours(r["reservation_at"], hours_map))
 
 
 def audit(action: str, entity_type: str = "", entity_id: str = "", details=None):
@@ -969,8 +1060,10 @@ def generate_slots(date_str: str, party_size: int):
     conn.close()
     if closed:
         return []
-    start = date.replace(hour=int(get_setting("open_hour", str(OPEN_HOUR))), minute=0)
-    close = date.replace(hour=int(get_setting("close_hour", str(CLOSE_HOUR))), minute=0)
+    window = hours_window_for_date(date.date(), get_business_hours_map())
+    if not window:
+        return []
+    start, close = window
     max_covers = int(get_setting("max_covers_per_slot", "30"))
     slots = []
     current = start
@@ -1050,15 +1143,12 @@ def staff_logout():
 @role_required("manager")
 def settings_hours_impact():
     """Backs the confirm-before-save dialog on the Settings page: given a
-    proposed open/close hour, how many existing reservations would fall
+    proposed per-day schedule, how many existing reservations would fall
     outside that window."""
-    open_hour = request.args.get("open_hour", type=int)
-    close_hour = request.args.get("close_hour", type=int)
-    if (open_hour is None or close_hour is None
-            or not (0 <= open_hour <= 23) or not (0 <= close_hour <= 23)
-            or open_hour >= close_hour):
+    proposed = parse_hours_form(request.args)
+    if proposed is None:
         return jsonify({"error": "Invalid hours."}), 400
-    return jsonify({"count": count_reservations_outside_hours(open_hour, close_hour)})
+    return jsonify({"count": count_reservations_outside_hours(proposed)})
 
 
 @app.route("/settings", methods=["GET", "POST"])
@@ -1072,28 +1162,21 @@ def settings_page():
             # step, since changing them can leave existing reservations outside
             # the new window (see count_reservations_outside_hours). The rest of
             # the settings below still save through the generic loop.
-            open_hour_raw = request.form.get("open_hour","").strip()
-            close_hour_raw = request.form.get("close_hour","").strip()
+            proposed_hours = parse_hours_form(request.form)
             confirm_hours = request.form.get("confirm_hours") == "1"
 
-            if not open_hour_raw or not close_hour_raw:
-                conn.close(); flash("Opening and closing times are required.", "error")
-                return redirect(url_for("settings_page"))
-            try:
-                open_hour, close_hour = int(open_hour_raw), int(close_hour_raw)
-            except ValueError:
-                conn.close(); flash("Opening and closing times must be whole hours (0-23).", "error")
-                return redirect(url_for("settings_page"))
-            if not (0 <= open_hour <= 23) or not (0 <= close_hour <= 23):
-                conn.close(); flash("Opening and closing times must be between 0 and 23.", "error")
-                return redirect(url_for("settings_page"))
-            if open_hour >= close_hour:
-                conn.close(); flash("Opening time must be before closing time.", "error")
+            if proposed_hours is None:
+                conn.close(); flash("Enter a valid open and close time for every day that isn't marked closed.", "error")
                 return redirect(url_for("settings_page"))
 
-            hours_changed = (str(open_hour) != get_setting("open_hour","")) or (str(close_hour) != get_setting("close_hour",""))
+            current_hours = get_business_hours_map()
+            hours_changed = any(
+                (proposed_hours[d]["is_closed"], proposed_hours[d]["open_time"], proposed_hours[d]["close_time"])
+                != (bool(current_hours.get(d, {}).get("is_closed")), current_hours.get(d, {}).get("open_time"), current_hours.get(d, {}).get("close_time"))
+                for d in range(7)
+            )
             if hours_changed and not confirm_hours:
-                affected = count_reservations_outside_hours(open_hour, close_hour)
+                affected = count_reservations_outside_hours(proposed_hours)
                 if affected > 0:
                     conn.close()
                     flash(
@@ -1103,7 +1186,16 @@ def settings_page():
                     )
                     return redirect(url_for("settings_page"))
 
-            for key in ("open_hour","close_hour","max_covers_per_slot","min_notice_minutes","booking_window_days","late_hold_minutes","same_day_cutoff_minutes"):
+            for day, spec in proposed_hours.items():
+                conn.execute("""
+                    INSERT INTO business_hours(day_of_week, is_closed, open_time, close_time, closes_next_day)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(day_of_week) DO UPDATE SET
+                      is_closed=excluded.is_closed, open_time=excluded.open_time,
+                      close_time=excluded.close_time, closes_next_day=excluded.closes_next_day
+                """, (day, 1 if spec["is_closed"] else 0, spec["open_time"], spec["close_time"], 1 if spec["closes_next_day"] else 0))
+
+            for key in ("max_covers_per_slot","min_notice_minutes","booking_window_days","late_hold_minutes","same_day_cutoff_minutes"):
                 value=request.form.get(key,"").strip()
                 if value: conn.execute("INSERT INTO app_settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(key,value))
             conn.commit(); audit("update_settings", "settings")
@@ -1119,8 +1211,11 @@ def settings_page():
         conn.close(); return redirect(url_for("settings_page"))
     settings={r["key"]:r["value"] for r in conn.execute("SELECT * FROM app_settings").fetchall()}
     closures=conn.execute("SELECT * FROM closures ORDER BY closure_date DESC").fetchall()
-    users=conn.execute("SELECT id,username,role,active,last_login_at FROM staff_users ORDER BY username").fetchall(); conn.close()
-    return render_template("settings.html", settings=settings, closures=closures, users=users, app_name=APP_NAME)
+    users=conn.execute("SELECT id,username,role,active,last_login_at FROM staff_users ORDER BY username").fetchall()
+    business_hours={r["day_of_week"]:r for r in conn.execute("SELECT * FROM business_hours ORDER BY day_of_week").fetchall()}
+    conn.close()
+    return render_template("settings.html", settings=settings, closures=closures, users=users,
+                           business_hours=business_hours, weekday_labels=WEEKDAY_LABELS, app_name=APP_NAME)
 
 
 @app.post("/settings/staff/<int:user_id>/password")
@@ -1857,8 +1952,7 @@ def floorplan_data():
 
     # Used to flag an occupied table's reservation as outside operating hours
     # (display-only, see count_reservations_outside_hours for the same math).
-    open_hour = int(get_setting("open_hour", str(OPEN_HOUR)))
-    close_hour = int(get_setting("close_hour", str(CLOSE_HOUR)))
+    hours_map = get_business_hours_map()
 
     conn = db()
     tables = conn.execute("""
@@ -1871,9 +1965,7 @@ def floorplan_data():
     for table in tables:
         reservation = conn.execute("""
             SELECT id, guest_name, party_size, reservation_at, status, occasion, notes, phone,
-                   duration_minutes, seated_at, completed_at,
-                   (EXTRACT(HOUR FROM reservation_at::timestamp) + EXTRACT(MINUTE FROM reservation_at::timestamp)/60.0 < ?
-                    OR EXTRACT(HOUR FROM reservation_at::timestamp) + EXTRACT(MINUTE FROM reservation_at::timestamp)/60.0 >= ?) AS outside_hours
+                   duration_minutes, seated_at, completed_at
             FROM reservations r
             JOIN reservation_tables rt ON rt.reservation_id = r.id
             WHERE rt.table_id = ?
@@ -1883,12 +1975,13 @@ def floorplan_data():
                     + make_interval(mins => r.duration_minutes) > ?::timestamp
             ORDER BY r.reservation_at::timestamp
             LIMIT 1
-        """, (open_hour, close_hour, table["id"], at.isoformat(timespec="minutes"), at.isoformat(timespec="minutes"))).fetchone()
+        """, (table["id"], at.isoformat(timespec="minutes"), at.isoformat(timespec="minutes"))).fetchone()
 
         item = dict(table)
         item["reservation"] = dict(reservation) if reservation else None
         item["display_status"] = reservation["status"] if reservation else "available"
         if reservation:
+            item["reservation"]["outside_hours"] = is_outside_business_hours(reservation["reservation_at"], hours_map)
             start_value = reservation["seated_at"] if reservation["status"] == "seated" and reservation["seated_at"] else reservation["reservation_at"]
             expected_end = parse_dt(start_value) + timedelta(minutes=reservation["duration_minutes"])
             remaining = int((expected_end - at).total_seconds() // 60)
@@ -2330,22 +2423,21 @@ def sync_guest_profile(conn, reservation):
 def timeline():
     require_staff_login()
     date_str = request.args.get("date") or datetime.now().strftime("%Y-%m-%d")
-    # Read live from app_settings, not the startup env vars -- previously this
-    # page kept showing the old hour range after a Settings change until the
-    # app restarted, even though booking availability already respected it.
-    open_hour = int(get_setting("open_hour", str(OPEN_HOUR)))
-    close_hour = int(get_setting("close_hour", str(CLOSE_HOUR)))
+    date_obj = datetime.strptime(date_str, "%Y-%m-%d")
+    # Read live from business_hours, not the startup env vars -- previously
+    # this page kept showing the old hour range after a Settings change
+    # until the app restarted, even though booking availability already
+    # respected it.
+    hours_map = get_business_hours_map()
     conn = db()
     reservations = conn.execute("""
-        SELECT r.*, t.name AS table_name, t.area,
-               (EXTRACT(HOUR FROM r.reservation_at::timestamp) + EXTRACT(MINUTE FROM r.reservation_at::timestamp)/60.0 < ?
-                OR EXTRACT(HOUR FROM r.reservation_at::timestamp) + EXTRACT(MINUTE FROM r.reservation_at::timestamp)/60.0 >= ?) AS outside_hours
+        SELECT r.*, t.name AS table_name, t.area
         FROM reservations r
         LEFT JOIN restaurant_tables t ON t.id=r.table_id
         WHERE r.reservation_at::date=?::date
           AND r.status NOT IN ('cancelled','no_show')
         ORDER BY r.reservation_at::timestamp, t.name
-    """, (open_hour, close_hour, date_str)).fetchall()
+    """, (date_str,)).fetchall()
     tables = conn.execute("""
         SELECT t.*, s.name AS server_name
         FROM restaurant_tables t
@@ -2354,11 +2446,19 @@ def timeline():
     """).fetchall()
     conn.close()
 
-    start = datetime.strptime(date_str + f" {open_hour:02d}:00", "%Y-%m-%d %H:%M")
-    slots = [(start + timedelta(minutes=30*i)).strftime("%H:%M") for i in range((close_hour-open_hour)*2+1)]
+    reservations = [dict(r, outside_hours=is_outside_business_hours(r["reservation_at"], hours_map)) for r in reservations]
+
+    window = hours_window_for_date(date_obj.date(), hours_map)
+    if window:
+        start, close = window
+        total_slots = int((close - start).total_seconds() // (SLOT_MINUTES * 60))
+        slots = [(start + timedelta(minutes=SLOT_MINUTES*i)).strftime("%H:%M") for i in range(total_slots + 1)]
+    else:
+        slots = []
+
     return render_template("timeline.html", reservations=reservations, tables=tables,
                            slots=slots, date_str=date_str, pin=request.args.get("pin"),
-                           app_name=APP_NAME)
+                           closed_today=(window is None), app_name=APP_NAME)
 
 
 @app.route("/waitlist", methods=["GET", "POST"])
@@ -2713,24 +2813,15 @@ def admin():
     date_str = request.args.get("date") or datetime.now().strftime("%Y-%m-%d")
     status_filter = request.args.get("status", "all")
     search = request.args.get("search", "").strip()
-    # Used to flag reservations that fall outside current operating hours;
-    # never used to modify or cancel them (see count_reservations_outside_hours).
-    open_hour = int(get_setting("open_hour", str(OPEN_HOUR)))
-    close_hour = int(get_setting("close_hour", str(CLOSE_HOUR)))
     conn = db()
 
-    outside_hours_expr = """
-               (EXTRACT(HOUR FROM r.reservation_at::timestamp) + EXTRACT(MINUTE FROM r.reservation_at::timestamp)/60.0 < ?
-                OR EXTRACT(HOUR FROM r.reservation_at::timestamp) + EXTRACT(MINUTE FROM r.reservation_at::timestamp)/60.0 >= ?) AS outside_hours"""
-
-    query = f"""
-        SELECT r.*, t.name AS table_name, t.area,
-               {outside_hours_expr}
+    query = """
+        SELECT r.*, t.name AS table_name, t.area
         FROM reservations r
         LEFT JOIN restaurant_tables t ON t.id = r.table_id
         WHERE r.reservation_at::date = ?::date
     """
-    params = [open_hour, close_hour, date_str]
+    params = [date_str]
     if status_filter != "all":
         query += " AND r.status = ?"
         params.append(status_filter)
@@ -2741,14 +2832,13 @@ def admin():
     query += " ORDER BY r.reservation_at::timestamp"
 
     reservations = conn.execute(query, params).fetchall()
-    all_day = conn.execute(f"""
-        SELECT r.*, t.name AS table_name, t.area,
-               {outside_hours_expr}
+    all_day = conn.execute("""
+        SELECT r.*, t.name AS table_name, t.area
         FROM reservations r
         LEFT JOIN restaurant_tables t ON t.id = r.table_id
         WHERE r.reservation_at::date = ?::date
         ORDER BY r.reservation_at::timestamp
-    """, (open_hour, close_hour, date_str)).fetchall()
+    """, (date_str,)).fetchall()
     tables = conn.execute("SELECT * FROM restaurant_tables WHERE active=1 ORDER BY area, name").fetchall()
     area_counts = conn.execute("""
         SELECT t.area,
@@ -2761,6 +2851,12 @@ def admin():
         ORDER BY t.area
     """, (date_str,)).fetchall()
     conn.close()
+
+    # Flags reservations that fall outside current operating hours; never
+    # used to modify or cancel them (see count_reservations_outside_hours).
+    hours_map = get_business_hours_map()
+    reservations = [dict(r, outside_hours=is_outside_business_hours(r["reservation_at"], hours_map)) for r in reservations]
+    all_day = [dict(r, outside_hours=is_outside_business_hours(r["reservation_at"], hours_map)) for r in all_day]
 
     active = [r for r in all_day if r["status"] not in ("cancelled", "no_show")]
     stats = {

@@ -134,7 +134,7 @@ small{color:var(--muted)}
 .wait-actions button{width:auto;padding:9px 12px}
 .vip-check{display:flex;align-items:center;gap:6px}.vip-check input{width:auto!important}
 .timeline-wrap{overflow:auto;border:1px solid var(--line);border-radius:14px;background:#fff}
-.timeline-head,.timeline-row{display:grid;grid-template-columns:150px repeat(13,110px);min-width:1580px}
+.timeline-head,.timeline-row{display:grid;grid-template-columns:150px repeat(var(--slot-count,13),110px)}
 .timeline-head{position:sticky;top:0;z-index:2;background:var(--cream);font-weight:700}
 .timeline-head>div,.timeline-cell,.timeline-table{padding:10px;border-right:1px solid var(--line);border-bottom:1px solid var(--line)}
 .timeline-table small{display:block;color:var(--muted);font-size:11px;margin-top:3px}
@@ -191,6 +191,17 @@ small{color:var(--muted)}
 .staff-password-form .password-field{width:200px}
 .staff-password-form .password-field input{padding:9px 40px 9px 10px;font-size:12px}
 .staff-password-form .small-action-button{white-space:nowrap}
+
+.hours-week{display:grid;gap:10px;margin-bottom:6px}
+.hours-day-row{display:flex;align-items:center;gap:14px;padding:10px 14px;border:1px solid var(--line);border-radius:12px;background:var(--cream)}
+.hours-day-label{flex:0 0 110px;font-weight:700}
+.hours-closed-toggle{display:flex!important;align-items:center;gap:6px;font-weight:600;color:var(--muted);flex:0 0 90px}
+.hours-closed-toggle input{width:auto!important}
+.hours-day-row input[type="time"]{width:auto;padding:9px 10px}
+.hours-day-row input[type="time"]:disabled{opacity:.4}
+.hours-range-sep{color:var(--muted);font-size:12px}
+.hours-day-row.is-closed{opacity:.6}
+@media(max-width:640px){.hours-day-row{flex-wrap:wrap}}
 
 /* Operating-hours warning badges: reservation list, timeline, floor plan. */
 .hours-warning{display:inline-block;margin-top:4px;background:#fde8e7;color:#81201d;border-radius:999px;padding:3px 9px;font-size:11px;font-weight:700}
