@@ -56,7 +56,7 @@
           <summary>
             <span class="row-time">{{ h12 }}:{{ r.reservation_at[14:16] }} {{ period }}</span>
             <span class="row-party">{{ r.party_size }}</span>
-            <span class="row-name">{{ r.guest_name }}</span>
+            <span class="row-name">{% if r.source == 'ai_agent' %}🤖 {% endif %}{{ r.guest_name }}</span>
             <span class="row-table-badge">{{ r.table_name or '—' }}</span>
             <span class="status-pill-row status-pill-{{ r.status }}">{{ r.status.replace('_',' ').title() }}</span>
             <span class="row-quick-actions" onclick="event.stopPropagation()">
@@ -81,6 +81,7 @@
             {% if r.occasion %}<div><b>Occasion</b>{{ r.occasion }}</div>{% endif %}
             {% if r.notes %}<div><b>Notes</b>{{ r.notes }}</div>{% endif %}
             <div><b>Confirmation</b>{{ r.id }}</div>
+            <div><b>Source</b>{{ (r.source or 'website').replace('_',' ').title() }}</div>
             {% if r.outside_hours %}<div class="hours-warning">⚠ Outside Operating Hours</div>{% endif %}
           </div>
         </details>

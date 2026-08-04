@@ -351,6 +351,7 @@ def init_db():
         "ALTER TABLE reservations ADD COLUMN IF NOT EXISTS marketing_opt_in INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE reservations ADD COLUMN IF NOT EXISTS seated_at TEXT",
         "ALTER TABLE reservations ADD COLUMN IF NOT EXISTS completed_at TEXT",
+        "ALTER TABLE reservations ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'website'",
         "ALTER TABLE guest_profiles ADD COLUMN IF NOT EXISTS birthday TEXT",
         "ALTER TABLE guest_profiles ADD COLUMN IF NOT EXISTS marketing_opt_in INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE guest_profiles ADD COLUMN IF NOT EXISTS marketing_opt_out_at TEXT",
@@ -1580,10 +1581,14 @@ def api_hours():
     })
 
 
+BOOKING_SOURCES = ("website", "ai_agent", "phone", "walk_in", "other")
+
+
 def _create_reservation(guest_name, email, phone, party_size, reservation_at_raw,
-                         occasion, notes, sms_opt_in, marketing_opt_in):
+                         occasion, notes, sms_opt_in, marketing_opt_in, source="website"):
     """Shared booking logic used by both the HTML form (/book) and the JSON
     API (/api/book). Returns a dict describing success or failure."""
+    source = source if source in BOOKING_SOURCES else "website"
     guest_name = (guest_name or "").strip()
     email = (email or "").strip()
     phone = (phone or "").strip()
@@ -1614,13 +1619,13 @@ def _create_reservation(guest_name, email, phone, party_size, reservation_at_raw
             INSERT INTO reservations (
                 id, guest_name, email, phone, party_size, reservation_at,
                 duration_minutes, table_id, status, occasion, notes,
-                manage_token, sms_opt_in, marketing_opt_in, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', ?, ?, ?, ?, ?, ?)
+                manage_token, sms_opt_in, marketing_opt_in, source, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', ?, ?, ?, ?, ?, ?, ?)
         """, (
             reservation_id, guest_name, email, phone, party_size,
             reservation_at.isoformat(timespec="minutes"), chosen["recommended_duration"],
             chosen["table_ids"][0], occasion, notes, manage_token, sms_opt_in, marketing_opt_in,
-            datetime.now().isoformat(timespec="seconds")
+            source, datetime.now().isoformat(timespec="seconds")
         ))
         conn.executemany(
             "INSERT INTO reservation_tables(reservation_id, table_id) VALUES (?, ?)",
@@ -1688,7 +1693,7 @@ def book():
     marketing_opt_in = 1 if request.form.get("marketing_opt_in") else 0
 
     result = _create_reservation(guest_name, email, phone, party_size, reservation_at_raw,
-                                  occasion, notes, sms_opt_in, marketing_opt_in)
+                                  occasion, notes, sms_opt_in, marketing_opt_in, source="website")
     if not result["ok"]:
         flash(result["error"], "error")
         return redirect(url_for("index"))
@@ -1722,9 +1727,10 @@ def api_book():
     notes = data.get("notes")
     sms_opt_in = 1 if str(data.get("sms_opt_in") or "").lower() in {"1", "true", "on", "yes"} else 0
     marketing_opt_in = 1 if str(data.get("marketing_opt_in") or "").lower() in {"1", "true", "on", "yes"} else 0
+    source = str(data.get("source") or "website").strip().lower()
 
     result = _create_reservation(guest_name, email, phone, party_size, reservation_at_raw,
-                                  occasion, notes, sms_opt_in, marketing_opt_in)
+                                  occasion, notes, sms_opt_in, marketing_opt_in, source=source)
     if not result["ok"]:
         return jsonify({"ok": False, "error": result["error"]}), result["status"]
 
@@ -1739,6 +1745,7 @@ def api_book():
             "party_size": r["party_size"],
             "reservation_at": r["reservation_at"],
             "status": r["status"],
+            "source": r["source"],
         },
         "manage_url": public_url("guest_manage", token=r["manage_token"]),
         "email_sent": result["email_sent"],
