@@ -32,6 +32,10 @@ SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL", SMTP_USERNAME)
 SMTP_FROM_NAME = os.getenv("SMTP_FROM_NAME", "Siena Restaurant and Bar")
 SMTP_USE_TLS = os.getenv("SMTP_USE_TLS", "true").lower() in {"1", "true", "yes", "on"}
+# Internal inbox that gets a copy of every new reservation, in addition to
+# the guest's own confirmation email -- e.g. rsvp@sienaatl.com. Blank skips
+# the notification entirely (booking always succeeds either way).
+STAFF_NOTIFICATION_EMAIL = os.getenv("STAFF_NOTIFICATION_EMAIL", "")
 RESTAURANT_PHONE = os.getenv("RESTAURANT_PHONE", "404-488-3399")
 RESTAURANT_ADDRESS = os.getenv("RESTAURANT_ADDRESS", "124 Devore Rd, Alpharetta, GA 30009")
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")
@@ -605,6 +609,63 @@ Siena Restaurant and Bar
 </body>
 </html>"""
     return send_email(reservation["email"], subject, html_body, text_body)
+
+
+def send_new_booking_staff_notification(reservation) -> bool:
+    """Internal copy of a brand-new reservation to STAFF_NOTIFICATION_EMAIL
+    (e.g. rsvp@sienaatl.com) so staff see new bookings land without having
+    to watch the dashboard -- covers both /book and /api/book, since
+    _create_reservation() is shared by both. Best-effort like the guest
+    email: never blocks or fails the booking itself."""
+    if not STAFF_NOTIFICATION_EMAIL:
+        return False
+    date_text = format_reservation_datetime(reservation["reservation_at"])
+    subject = f"New reservation — {reservation['guest_name']} · {date_text}"
+    dashboard_link = public_url("admin", date=reservation["reservation_at"][:10])
+
+    text_body = f"""A new reservation was just booked.
+
+Guest: {reservation['guest_name']}
+Email: {reservation['email']}
+Phone: {reservation['phone']}
+Party size: {reservation['party_size']} guests
+Date and time: {date_text}
+Occasion: {reservation['occasion'] or '-'}
+Notes: {reservation['notes'] or '-'}
+Confirmation: {reservation['id']}
+
+View in the dashboard:
+{dashboard_link}
+"""
+
+    html_body = f"""<!doctype html>
+<html>
+<body style="margin:0;background:#f5f0e8;font-family:Arial,sans-serif;color:#211b18">
+  <div style="max-width:620px;margin:32px auto;background:#ffffff;border-radius:14px;overflow:hidden;border:1px solid #ddd2c4">
+    <div style="background:#080808;padding:26px;text-align:center">
+      <div style="color:#fff;font-family:Georgia,serif;font-size:36px;font-style:italic">Siena</div>
+      <div style="color:#c9a25d;letter-spacing:4px;font-size:10px">NEW RESERVATION</div>
+    </div>
+    <div style="padding:30px">
+      <h1 style="font-family:Georgia,serif;font-size:26px;margin:0 0 16px">New reservation booked</h1>
+      <div style="background:#faf7f1;border:1px solid #e7ded2;border-radius:10px;padding:18px;line-height:1.9">
+        <strong>Guest:</strong> {reservation['guest_name']}<br>
+        <strong>Email:</strong> {reservation['email']}<br>
+        <strong>Phone:</strong> {reservation['phone']}<br>
+        <strong>Party size:</strong> {reservation['party_size']} guests<br>
+        <strong>Date and time:</strong> {date_text}<br>
+        <strong>Occasion:</strong> {reservation['occasion'] or '&mdash;'}<br>
+        <strong>Notes:</strong> {reservation['notes'] or '&mdash;'}<br>
+        <strong>Confirmation:</strong> {reservation['id']}
+      </div>
+      <a href="{dashboard_link}" style="display:block;text-align:center;margin:24px 0 10px;background:#6f1d2b;color:#fff;text-decoration:none;padding:15px;border-radius:8px;font-weight:bold">
+        View in Dashboard
+      </a>
+    </div>
+  </div>
+</body>
+</html>"""
+    return send_email(STAFF_NOTIFICATION_EMAIL, subject, html_body, text_body)
 
 
 def normalize_phone(value: str) -> str:
@@ -1596,6 +1657,7 @@ def _create_reservation(guest_name, email, phone, party_size, reservation_at_raw
         )
         conn.commit()
         conn.close()
+    send_new_booking_staff_notification(reservation)
 
     sms_sent = False
     if sms_opt_in:
