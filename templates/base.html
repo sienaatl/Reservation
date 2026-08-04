@@ -36,6 +36,7 @@
     {% if session.get('staff_user_id') %}<a href="{{ url_for('settings_page') }}">Settings</a><a href="{{ url_for('audit_page') }}">Audit</a><button type="button" id="install-app-button" class="nav-install" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><polyline points="7 10 12 15 17 10"/><path d="M5 21h14"/></svg>Install</button><form method="post" action="{{ url_for('staff_logout') }}" style="display:inline"><button class="nav-logout"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>Sign out</button></form>{% endif %}</nav>
   </header>
 
+  {% if request.endpoint == 'staff_login' %}
   <div id="install-banner" class="install-banner" hidden>
     <span>📲 Install this app on your iPad for quick access from the Home Screen.</span>
     <div class="install-banner-actions">
@@ -43,6 +44,7 @@
       <button type="button" id="install-banner-dismiss" class="install-banner-close" aria-label="Dismiss">×</button>
     </div>
   </div>
+  {% endif %}
   <div id="install-instructions" class="install-instructions-overlay" hidden>
     <div class="install-instructions-card">
       <button type="button" id="install-instructions-close" class="dialog-close" aria-label="Close">×</button>
@@ -100,10 +102,11 @@
         deferredInstallPrompt = e;
       });
 
-      // Dismissible top banner -- iOS only, since Chrome/Android already
-      // shows its own native install banner without any help from us.
-      if (isIOS() && !isStandalone() && localStorage.getItem('installBannerDismissed') !== '1') {
-        const banner = document.getElementById('install-banner');
+      // Dismissible top banner -- only present in the DOM on the login page
+      // (see base.html's request.endpoint check), iOS only, since Chrome/
+      // Android already shows its own native install banner unprompted.
+      const banner = document.getElementById('install-banner');
+      if (banner && isIOS() && !isStandalone() && localStorage.getItem('installBannerDismissed') !== '1') {
         banner.hidden = false;
         document.getElementById('install-banner-dismiss').addEventListener('click', () => {
           banner.hidden = true;
