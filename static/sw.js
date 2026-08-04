@@ -1,13 +1,19 @@
 // Deliberately conservative: this app is a live restaurant floor/reservation
 // dashboard, so caching dynamic pages or /api/* responses risks staff
 // seeing stale table/booking state and double-booking a table. This service
-// worker only exists to make the PWA installable and keep the static
-// app shell (CSS, icons, manifest) available if the network hiccups --
-// every HTML page and API call always goes straight to the network.
-const CACHE_NAME = "siena-shell-v1";
+// worker only exists to make the PWA installable -- every HTML page and
+// API call always goes straight to the network.
+//
+// Only truly immutable assets (icons, manifest) are cached. CSS is
+// deliberately NOT cached here: this project is under active development,
+// and caching style.css means a CSS fix can be live on the server while
+// every browser that already installed this service worker keeps serving
+// the old stylesheet from cache indefinitely, since editing style.css
+// alone doesn't change sw.js's bytes and so never triggers a cache
+// refresh. Bump CACHE_NAME any time SHELL_ASSETS changes, to force old
+// caches to be dropped in the activate handler below.
+const CACHE_NAME = "siena-shell-v2";
 const SHELL_ASSETS = [
-  "/static/style.css",
-  "/static/siena-logo.png",
   "/static/icon-192.png",
   "/static/icon-512.png",
   "/static/apple-touch-icon.png",
