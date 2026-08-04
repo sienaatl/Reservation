@@ -1526,6 +1526,14 @@ def mark_support_notifications_read():
     return jsonify({"ok": True})
 
 
+@app.get("/sw.js")
+def service_worker():
+    """Served from the root path (not /static/sw.js) so its default scope
+    covers the whole app instead of just /static/*, which is what a service
+    worker needs to actually control page navigations."""
+    return app.send_static_file("sw.js")
+
+
 @app.get("/")
 def index():
     # This app is the staff dashboard, not a guest-facing site (guests book
