@@ -146,7 +146,8 @@ small{color:var(--muted)}
 .sms-consent{display:flex!important;align-items:flex-start;gap:9px;font-size:12px;line-height:1.45;color:var(--muted)}
 .sms-consent input{width:auto!important;margin-top:3px}
 
-.login-shell{min-height:calc(100vh - 72px);display:flex;align-items:center;justify-content:center;padding:20px}.login-card{display:grid;gap:15px;max-width:480px;width:100%}.nav-logout{display:inline-flex;align-items:center;gap:6px;background:#f8dedc;color:#8a2525;border:0;border-radius:8px;padding:8px 14px;font:inherit;font-weight:700;font-size:13px;cursor:pointer}.nav-logout:hover{background:#f3cdc9}.nav-logout svg{width:14px;height:14px}.table-scroll{overflow:auto}.table-scroll table{width:100%;border-collapse:collapse}.table-scroll th,.table-scroll td{padding:10px;border-bottom:1px solid var(--line);text-align:left;font-size:13px}
+.login-shell{min-height:calc(100vh - 72px);display:flex;align-items:center;justify-content:center;padding:20px}.login-card{display:grid;gap:15px;max-width:480px;width:100%}.nav-logout{display:inline-flex;align-items:center;gap:6px;background:#f8dedc;color:#8a2525;border:0;border-radius:8px;padding:8px 14px;font:inherit;font-weight:700;font-size:13px;cursor:pointer}.nav-logout:hover{background:#f3cdc9}.nav-logout svg{width:14px;height:14px}
+.nav-install{display:inline-flex;align-items:center;gap:6px;background:#fdf1da;color:#6c4c17;border:0;border-radius:8px;padding:8px 14px;font:inherit;font-weight:700;font-size:13px;cursor:pointer;margin-right:8px}.nav-install:hover{background:#f8e6c0}.nav-install svg{width:14px;height:14px}.table-scroll{overflow:auto}.table-scroll table{width:100%;border-collapse:collapse}.table-scroll th,.table-scroll td{padding:10px;border-bottom:1px solid var(--line);text-align:left;font-size:13px}
 
 /* .admin-shell/.admin-heading are used by admin.html, settings.html,
    guests.html, timeline.html, manager.html, waitlist.html, servers.html, and

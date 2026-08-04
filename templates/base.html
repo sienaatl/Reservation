@@ -33,7 +33,7 @@
       <a href="{{ url_for('guests_page') }}">Guests</a>
       <a href="{{ url_for('support_page') }}" id="nav-support-link">Support{% if open_support_tickets %} <span class="nav-badge" id="nav-support-badge">{{ open_support_tickets }}</span>{% endif %}</a>
       {% endif %}
-    {% if session.get('staff_user_id') %}<a href="{{ url_for('settings_page') }}">Settings</a><a href="{{ url_for('audit_page') }}">Audit</a><form method="post" action="{{ url_for('staff_logout') }}" style="display:inline"><button class="nav-logout"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>Sign out</button></form>{% endif %}</nav>
+    {% if session.get('staff_user_id') %}<a href="{{ url_for('settings_page') }}">Settings</a><a href="{{ url_for('audit_page') }}">Audit</a><button type="button" id="install-app-button" class="nav-install" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><polyline points="7 10 12 15 17 10"/><path d="M5 21h14"/></svg>Install</button><form method="post" action="{{ url_for('staff_logout') }}" style="display:inline"><button class="nav-logout"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>Sign out</button></form>{% endif %}</nav>
   </header>
 
   <div id="install-banner" class="install-banner" hidden>
@@ -74,9 +74,12 @@
       });
     }
 
-    // iOS/iPadOS has no install-prompt API (Safari never implemented
-    // beforeinstallprompt) -- the only path is Share > Add to Home Screen,
-    // so this just surfaces that instead of a real one-tap install.
+    // Install UX for the PWA. iOS/iPadOS has no install-prompt API at all
+    // (Safari never implemented beforeinstallprompt) -- there is no way to
+    // trigger "Add to Home Screen" from a page's JS on iPad, only to walk
+    // the user through doing it manually via Safari's Share menu. On
+    // Chrome/Android/desktop Chrome, beforeinstallprompt IS available and
+    // this triggers a real one-tap install there.
     (function () {
       function isIOS() {
         return /iPad|iPhone|iPod/.test(navigator.userAgent) ||
@@ -85,19 +88,45 @@
       function isStandalone() {
         return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
       }
-      if (!isIOS() || isStandalone() || localStorage.getItem('installBannerDismissed') === '1') return;
 
-      const banner = document.getElementById('install-banner');
       const overlay = document.getElementById('install-instructions');
-      banner.hidden = false;
+      const overlayClose = document.getElementById('install-instructions-close');
+      if (overlayClose) overlayClose.addEventListener('click', () => { overlay.hidden = true; });
+      if (overlay) overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.hidden = true; });
 
-      document.getElementById('install-banner-dismiss').addEventListener('click', () => {
-        banner.hidden = true;
-        localStorage.setItem('installBannerDismissed', '1');
+      let deferredInstallPrompt = null;
+      window.addEventListener('beforeinstallprompt', (e) => {
+        e.preventDefault();
+        deferredInstallPrompt = e;
       });
-      document.getElementById('install-banner-how').addEventListener('click', () => { overlay.hidden = false; });
-      document.getElementById('install-instructions-close').addEventListener('click', () => { overlay.hidden = true; });
-      overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.hidden = true; });
+
+      // Dismissible top banner -- iOS only, since Chrome/Android already
+      // shows its own native install banner without any help from us.
+      if (isIOS() && !isStandalone() && localStorage.getItem('installBannerDismissed') !== '1') {
+        const banner = document.getElementById('install-banner');
+        banner.hidden = false;
+        document.getElementById('install-banner-dismiss').addEventListener('click', () => {
+          banner.hidden = true;
+          localStorage.setItem('installBannerDismissed', '1');
+        });
+        document.getElementById('install-banner-how').addEventListener('click', () => { overlay.hidden = false; });
+      }
+
+      // Persistent nav button (next to Sign out) -- real one-tap install
+      // where the browser supports it, instructions modal otherwise.
+      const installButton = document.getElementById('install-app-button');
+      if (installButton && !isStandalone()) {
+        installButton.hidden = false;
+        installButton.addEventListener('click', async () => {
+          if (deferredInstallPrompt) {
+            deferredInstallPrompt.prompt();
+            await deferredInstallPrompt.userChoice;
+            deferredInstallPrompt = null;
+          } else {
+            overlay.hidden = false;
+          }
+        });
+      }
     })();
   </script>
 </body>
