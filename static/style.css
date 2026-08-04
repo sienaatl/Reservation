@@ -288,12 +288,20 @@ small{color:var(--muted)}
 @media(max-width:700px){.crm-drawer-grid{grid-template-columns:1fr}.crm-toolbar{flex-direction:column;align-items:stretch}.crm-toolbar #crm-search{max-width:none}}
 
 /* iOS "install this app" banner + instructions (base.html) -- Safari has
-   no install-prompt API, so this only ever links to manual instructions. */
-.install-banner{display:flex;align-items:center;justify-content:space-between;gap:12px;background:var(--burgundy);color:#fff;padding:10px 20px;font-size:13px}
+   no install-prompt API, so this only ever links to manual instructions.
+   Both elements are shown/hidden by toggling the "hidden" attribute in JS,
+   so display is set via :not([hidden]) rather than directly on the base
+   class -- a plain "display:flex" on the base class would win over the
+   browser's built-in [hidden]{display:none} rule (author styles always
+   beat user-agent styles regardless of the hidden attribute), leaving the
+   close button visually present but doing nothing. */
+.install-banner{align-items:center;justify-content:space-between;gap:12px;background:var(--burgundy);color:#fff;padding:10px 20px;font-size:13px}
+.install-banner:not([hidden]){display:flex}
 .install-banner-actions{display:flex;align-items:center;gap:10px;flex-shrink:0}
 .install-banner-actions .small-action-button{background:#fff;color:var(--burgundy);border:0}
 .install-banner-close{background:none;border:0;color:#fff;font-size:20px;cursor:pointer;line-height:1;padding:0 4px}
-.install-instructions-overlay{position:fixed;inset:0;background:rgba(20,14,10,.5);display:flex;align-items:center;justify-content:center;z-index:100;padding:20px}
+.install-instructions-overlay{position:fixed;inset:0;background:rgba(20,14,10,.5);align-items:center;justify-content:center;z-index:100;padding:20px}
+.install-instructions-overlay:not([hidden]){display:flex}
 .install-instructions-card{background:#fff;border-radius:16px;padding:28px;max-width:380px;width:100%;position:relative;box-shadow:0 30px 80px rgba(0,0,0,.3)}
 .install-instructions-card h2{margin:0 0 14px;font-size:22px}
 .install-instructions-card ol{margin:0;padding-left:20px;display:grid;gap:10px;font-size:14px;color:var(--ink)}
