@@ -35,6 +35,26 @@
       {% endif %}
     {% if session.get('staff_user_id') %}<a href="{{ url_for('settings_page') }}">Settings</a><a href="{{ url_for('audit_page') }}">Audit</a><form method="post" action="{{ url_for('staff_logout') }}" style="display:inline"><button class="nav-logout"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>Sign out</button></form>{% endif %}</nav>
   </header>
+
+  <div id="install-banner" class="install-banner" hidden>
+    <span>📲 Install this app on your iPad for quick access from the Home Screen.</span>
+    <div class="install-banner-actions">
+      <button type="button" id="install-banner-how" class="small-action-button">How?</button>
+      <button type="button" id="install-banner-dismiss" class="install-banner-close" aria-label="Dismiss">×</button>
+    </div>
+  </div>
+  <div id="install-instructions" class="install-instructions-overlay" hidden>
+    <div class="install-instructions-card">
+      <button type="button" id="install-instructions-close" class="dialog-close" aria-label="Close">×</button>
+      <h2>Install on iPad</h2>
+      <ol>
+        <li>Tap the <strong>Share</strong> button <span class="share-icon">⬆️</span> in Safari's toolbar.</li>
+        <li>Scroll down and tap <strong>"Add to Home Screen."</strong></li>
+        <li>Tap <strong>"Add"</strong> in the top-right corner.</li>
+      </ol>
+    </div>
+  </div>
+
   <main>{% block content %}{% endblock %}</main>
   <script>
     function togglePasswordVisibility(btn) {
@@ -53,6 +73,32 @@
         navigator.serviceWorker.register("{{ url_for('service_worker') }}");
       });
     }
+
+    // iOS/iPadOS has no install-prompt API (Safari never implemented
+    // beforeinstallprompt) -- the only path is Share > Add to Home Screen,
+    // so this just surfaces that instead of a real one-tap install.
+    (function () {
+      function isIOS() {
+        return /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+               (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+      }
+      function isStandalone() {
+        return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+      }
+      if (!isIOS() || isStandalone() || localStorage.getItem('installBannerDismissed') === '1') return;
+
+      const banner = document.getElementById('install-banner');
+      const overlay = document.getElementById('install-instructions');
+      banner.hidden = false;
+
+      document.getElementById('install-banner-dismiss').addEventListener('click', () => {
+        banner.hidden = true;
+        localStorage.setItem('installBannerDismissed', '1');
+      });
+      document.getElementById('install-banner-how').addEventListener('click', () => { overlay.hidden = false; });
+      document.getElementById('install-instructions-close').addEventListener('click', () => { overlay.hidden = true; });
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.hidden = true; });
+    })();
   </script>
 </body>
 </html>

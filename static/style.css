@@ -285,3 +285,16 @@ small{color:var(--muted)}
 .crm-drawer-actions{display:flex;justify-content:flex-end;gap:10px}
 .crm-drawer-actions .outline-button,.crm-drawer-actions .primary-button{width:auto}
 @media(max-width:700px){.crm-drawer-grid{grid-template-columns:1fr}.crm-toolbar{flex-direction:column;align-items:stretch}.crm-toolbar #crm-search{max-width:none}}
+
+/* iOS "install this app" banner + instructions (base.html) -- Safari has
+   no install-prompt API, so this only ever links to manual instructions. */
+.install-banner{display:flex;align-items:center;justify-content:space-between;gap:12px;background:var(--burgundy);color:#fff;padding:10px 20px;font-size:13px}
+.install-banner-actions{display:flex;align-items:center;gap:10px;flex-shrink:0}
+.install-banner-actions .small-action-button{background:#fff;color:var(--burgundy);border:0}
+.install-banner-close{background:none;border:0;color:#fff;font-size:20px;cursor:pointer;line-height:1;padding:0 4px}
+.install-instructions-overlay{position:fixed;inset:0;background:rgba(20,14,10,.5);display:flex;align-items:center;justify-content:center;z-index:100;padding:20px}
+.install-instructions-card{background:#fff;border-radius:16px;padding:28px;max-width:380px;width:100%;position:relative;box-shadow:0 30px 80px rgba(0,0,0,.3)}
+.install-instructions-card h2{margin:0 0 14px;font-size:22px}
+.install-instructions-card ol{margin:0;padding-left:20px;display:grid;gap:10px;font-size:14px;color:var(--ink)}
+.install-instructions-card .dialog-close{position:absolute;top:14px;right:14px}
+@media(max-width:600px){.install-banner{flex-direction:column;align-items:stretch;text-align:center}}
