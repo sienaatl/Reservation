@@ -60,13 +60,16 @@
             <span class="row-table-badge">{{ r.table_name or '—' }}</span>
             <span class="status-pill-row status-pill-{{ r.status }}">{{ r.status.replace('_',' ').title() }}</span>
             <span class="row-quick-actions" onclick="event.stopPropagation()">
-              <form class="quick-status-form" method="post" action="{{ url_for('update_status', reservation_id=r.id) }}" data-target-status="seated">
-                <input type="hidden" name="pin" value="{{ pin or '' }}"><input type="hidden" name="date" value="{{ date_str }}"><input type="hidden" name="status" value="seated">
-                <button type="submit" class="icon-action-button" data-quick="seat" title="Seat">🪑</button>
-              </form>
-              <form class="quick-status-form" method="post" action="{{ url_for('update_status', reservation_id=r.id) }}" data-target-status="completed">
-                <input type="hidden" name="pin" value="{{ pin or '' }}"><input type="hidden" name="date" value="{{ date_str }}"><input type="hidden" name="status" value="completed">
-                <button type="submit" class="icon-action-button" data-quick="complete" title="Complete">✅</button>
+              <form class="quick-status-form" method="post" action="{{ url_for('update_status', reservation_id=r.id) }}">
+                <input type="hidden" name="pin" value="{{ pin or '' }}"><input type="hidden" name="date" value="{{ date_str }}">
+                <select name="status" class="row-status-select" onchange="this.form.requestSubmit()" title="Change status">
+                  <option value="confirmed" {% if r.status=='confirmed' %}selected{% endif %}>Confirmed</option>
+                  <option value="walk_in" {% if r.status=='walk_in' %}selected{% endif %}>Walk In</option>
+                  <option value="seated" {% if r.status=='seated' %}selected{% endif %}>Seated</option>
+                  <option value="completed" {% if r.status=='completed' %}selected{% endif %}>Completed</option>
+                  <option value="cancelled" {% if r.status=='cancelled' %}selected{% endif %}>Cancelled</option>
+                  <option value="no_show" {% if r.status=='no_show' %}selected{% endif %}>No Show</option>
+                </select>
               </form>
               <a class="icon-action-button" href="{{ url_for('edit_reservation', reservation_id=r.id, pin=pin) }}" title="Edit">✏️</a>
               <form method="post" action="{{ url_for('admin_resend_email', reservation_id=r.id) }}" class="inline-action-form">
@@ -162,7 +165,8 @@
 
 <script>
 // Moves a reservation row between the Reservation Book's grouped sections
-// when its status changes via the compact Seat/Complete quick actions,
+// when its status changes via the row's status dropdown (any status is
+// reachable directly -- e.g. Cancelled without going through Seated first),
 // instead of a full-page reload. Table assignment now lives on the Edit
 // page only; Edit and Resend Email still do their normal request (Edit
 // navigates, Resend Email does a plain form submit).
@@ -205,11 +209,12 @@
 
     const row = form.closest('.reservation-row');
     const oldStatus = row.dataset.status;
-    const newStatus = form.dataset.targetStatus;
+    const formData = new FormData(form);
+    const newStatus = formData.get('status');
     const oldGroupKey = GROUP_FOR_STATUS[oldStatus];
     const newGroupKey = GROUP_FOR_STATUS[newStatus];
 
-    const body = new URLSearchParams(new FormData(form));
+    const body = new URLSearchParams(formData);
     let response;
     try {
       response = await fetch(form.action, { method: 'POST', body });
@@ -218,6 +223,8 @@
     }
     if (!response || !response.ok) {
       alert('Unable to update status. Please try again.');
+      const select = form.querySelector('select[name="status"]');
+      if (select) select.value = oldStatus; // revert the dropdown -- the update didn't actually take
       return;
     }
 
