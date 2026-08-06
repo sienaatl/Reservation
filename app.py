@@ -10,6 +10,7 @@ from functools import wraps
 from email.message import EmailMessage
 from datetime import datetime, timedelta
 from urllib.parse import quote
+from xml.sax.saxutils import escape as xml_escape
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, abort, session, Response
 from werkzeug.security import generate_password_hash, check_password_hash
 from twilio.rest import Client
@@ -870,14 +871,34 @@ def guest_message_task():
 
 @app.post("/twilio/incoming")
 def twilio_incoming():
+    """Handles the CTIA-standard SMS keyword set registered with the A2P
+    10DLC campaign: STOP-family unsubscribes (and confirms), START/YES/
+    UNSTOP re-subscribes (and confirms), HELP replies with contact info.
+    Carriers test these directly against what's registered, so real
+    behavior has to match -- a silent 204 with no reply was a compliance
+    gap even before START/YES/UNSTOP/HELP existed here at all."""
     phone = normalize_phone(request.form.get("From", ""))
     body = request.form.get("Body", "").strip().upper()
+    reply = None
+
     if body in {"STOP", "STOPALL", "UNSUBSCRIBE", "CANCEL", "END", "QUIT"} and phone:
         conn = db()
         conn.execute("UPDATE guest_profiles SET marketing_opt_in=0, marketing_opt_out_at=? WHERE phone=?",
                      (datetime.now().isoformat(timespec="seconds"), phone))
-        conn.execute("UPDATE reservations SET marketing_opt_in=0 WHERE phone=?", (phone,))
+        conn.execute("UPDATE reservations SET marketing_opt_in=0, sms_opt_in=0 WHERE phone=?", (phone,))
         conn.commit(); conn.close()
+        reply = "Siena Restaurant: You have been unsubscribed and will not receive further texts. Reply START to resubscribe."
+    elif body in {"START", "YES", "UNSTOP"} and phone:
+        conn = db()
+        conn.execute("UPDATE guest_profiles SET marketing_opt_in=1, marketing_opt_out_at=NULL WHERE phone=?", (phone,))
+        conn.commit(); conn.close()
+        reply = "Siena Restaurant: You are now opted-in to receive reservation updates via text. Msg&data rates may apply. Reply HELP for help, STOP to opt-out."
+    elif body == "HELP" and phone:
+        reply = f"Siena Restaurant: For help call {RESTAURANT_PHONE}. Reply STOP to opt-out."
+
+    if reply:
+        twiml = f"<?xml version='1.0' encoding='UTF-8'?><Response><Message>{xml_escape(reply)}</Message></Response>"
+        return Response(twiml, mimetype="text/xml")
     return ("", 204)
 
 
