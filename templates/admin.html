@@ -38,7 +38,7 @@
             <input type="hidden" name="pin" value="{{ pin or '' }}">
             <input type="date" name="date" value="{{ date_str }}" onchange="this.form.submit()">
             <select name="status" onchange="this.form.submit()">
-              {% for value,label in [('all','All statuses'),('confirmed','Confirmed'),('seated','Seated'),('walk_in','Walk-ins'),('completed','Completed'),('cancelled','Cancelled'),('no_show','No-show')] %}
+              {% for value,label in [('all','All statuses'),('confirmed','Confirmed'),('seated','Seated'),('walk_in','Walk-ins'),('completed','Completed'),('transferred','Transferred to OpenTable'),('cancelled','Cancelled'),('no_show','No-show')] %}
               <option value="{{ value }}" {% if status_filter==value %}selected{% endif %}>{{ label }}</option>
               {% endfor %}
             </select>
@@ -67,6 +67,7 @@
                   <option value="walk_in" {% if r.status=='walk_in' %}selected{% endif %}>Walk In</option>
                   <option value="seated" {% if r.status=='seated' %}selected{% endif %}>Seated</option>
                   <option value="completed" {% if r.status=='completed' %}selected{% endif %}>Completed</option>
+                  <option value="transferred" {% if r.status=='transferred' %}selected{% endif %}>Transferred</option>
                   <option value="cancelled" {% if r.status=='cancelled' %}selected{% endif %}>Cancelled</option>
                   <option value="no_show" {% if r.status=='no_show' %}selected{% endif %}>No Show</option>
                 </select>
@@ -95,6 +96,7 @@
             ('reservations', 'Reservations', ['confirmed','walk_in'], true, 'reservations'),
             ('seated', 'Seated', ['seated'], true, 'tables'),
             ('finished', 'Finished', ['completed'], false, 'reservations'),
+            ('transferred', 'Transferred to OpenTable', ['transferred'], false, 'reservations'),
             ('removed', 'Removed', ['cancelled','no_show'], false, 'reservations')
           ] %}
           {% set group_reservations = reservations|selectattr('status','in',statuses)|list %}
@@ -178,11 +180,12 @@
     confirmed: 'reservations', walk_in: 'reservations',
     seated: 'seated',
     completed: 'finished',
+    transferred: 'transferred',
     cancelled: 'removed', no_show: 'removed',
   };
   const STATUS_LABEL = {
     confirmed: 'Confirmed', walk_in: 'Walk In', seated: 'Seated',
-    completed: 'Completed', cancelled: 'Cancelled', no_show: 'No Show',
+    completed: 'Completed', transferred: 'Transferred', cancelled: 'Cancelled', no_show: 'No Show',
   };
 
   function updateGroupCounts(groupKey) {
