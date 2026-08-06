@@ -2643,7 +2643,7 @@ def edit_reservation(reservation_id):
         occasion = request.form.get("occasion", "").strip()
         notes = request.form.get("notes", "").strip()
 
-        allowed = {"confirmed", "seated", "completed", "cancelled", "no_show", "walk_in"}
+        allowed = {"confirmed", "seated", "completed", "cancelled", "no_show", "walk_in", "transferred"}
         if not guest_name or not party_size or not reservation_at_raw:
             flash("Guest name, party size, and reservation time are required.", "error")
         elif status not in allowed:
@@ -3204,7 +3204,10 @@ def admin():
     reservations = [dict(r, outside_hours=is_outside_business_hours(r["reservation_at"], hours_map)) for r in reservations]
     all_day = [dict(r, outside_hours=is_outside_business_hours(r["reservation_at"], hours_map)) for r in all_day]
 
-    active = [r for r in all_day if r["status"] not in ("cancelled", "no_show")]
+    # Transferred reservations are no longer being serviced by Siena (moved
+    # to OpenTable), so they're excluded from active covers/bookings the
+    # same way cancelled/no_show are.
+    active = [r for r in all_day if r["status"] not in ("cancelled", "no_show", "transferred")]
     stats = {
         "covers": sum(r["party_size"] for r in active),
         "bookings": len(active),
@@ -3213,6 +3216,7 @@ def admin():
         "cancelled": sum(1 for r in all_day if r["status"] == "cancelled"),
         "no_show": sum(1 for r in all_day if r["status"] == "no_show"),
         "walk_in": sum(1 for r in all_day if r["status"] == "walk_in"),
+        "transferred": sum(1 for r in all_day if r["status"] == "transferred"),
         "unassigned": sum(1 for r in active if not r["table_id"]),
     }
     total_capacity = sum(t["capacity"] for t in tables)
@@ -3231,7 +3235,7 @@ def admin():
 def update_status(reservation_id):
     require_admin()
     status = request.form.get("status")
-    allowed = {"confirmed", "seated", "completed", "cancelled", "no_show", "walk_in"}
+    allowed = {"confirmed", "seated", "completed", "cancelled", "no_show", "walk_in", "transferred"}
     if status not in allowed:
         abort(400)
     conn = db()

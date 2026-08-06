@@ -43,7 +43,7 @@
       </label>
       <label>Status
         <select name="status">
-          {% for status in ['confirmed','seated','walk_in','completed','cancelled','no_show'] %}
+          {% for status in ['confirmed','seated','walk_in','completed','transferred','cancelled','no_show'] %}
           <option value="{{ status }}" {% if reservation.status == status %}selected{% endif %}>{{ status.replace('_',' ').title() }}</option>
           {% endfor %}
         </select>
