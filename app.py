@@ -1982,7 +1982,10 @@ def api_large_party_inquiry():
     creating a reservation directly -- doesn't touch the reservations table
     at all. Built for external callers (e.g. a phone-call AI agent via n8n)
     handling parties over 11 guests. Not linked anywhere in this app's own
-    UI -- API-only, for the agent integration."""
+    UI -- API-only, for the agent integration. Only phone is required --
+    the agent may not always have captured the guest's name, email, or
+    exact party size before this fires, so those fall back gracefully
+    instead of rejecting the request."""
     require_admin()
     data = request.get_json(silent=True) or request.form or request.args
 
@@ -1994,21 +1997,22 @@ def api_large_party_inquiry():
     except (TypeError, ValueError):
         party_size = None
 
-    if not guest_name or not email or not phone or not party_size:
-        return jsonify({"ok": False, "error": "guest_name, email, phone, and party_size are all required."}), 400
-    if party_size <= 11:
+    if not phone:
+        return jsonify({"ok": False, "error": "phone is required."}), 400
+    if party_size is not None and party_size <= 11:
         return jsonify({
             "ok": False,
             "error": "This is for parties larger than 11 guests. For 11 or fewer, book normally instead."
         }), 400
 
-    first_name = guest_name.split()[0]
+    first_name = guest_name.split()[0] if guest_name else "there"
+    party_text = f"{party_size} guests" if party_size else "your group"
     inquiry_url = "https://sienaatl.com/event-inquiry"
 
     subject = "Your Large Party Request — Siena Restaurant and Bar"
     text_body = f"""Hi {first_name},
 
-Thank you for your interest in dining with us! For parties of {party_size} guests, please submit your request through our event inquiry form so our team can arrange the best experience for your group:
+Thank you for your interest in dining with us! For parties of {party_text}, please submit your request through our event inquiry form so our team can arrange the best experience for your group:
 
 {inquiry_url}
 
@@ -2027,8 +2031,8 @@ Siena Restaurant and Bar
     </div>
     <div style="padding:30px">
       <h1 style="font-family:Georgia,serif;font-size:26px;margin:0 0 12px">Large Party Request</h1>
-      <p style="color:#6f655e">Hello {guest_name}, thank you for your interest in dining with us.</p>
-      <p style="color:#6f655e">For parties of <strong>{party_size} guests</strong>, please submit your request through our event inquiry form so our team can arrange the best experience for your group.</p>
+      <p style="color:#6f655e">Hello {guest_name or 'there'}, thank you for your interest in dining with us.</p>
+      <p style="color:#6f655e">For parties of <strong>{party_text}</strong>, please submit your request through our event inquiry form so our team can arrange the best experience for your group.</p>
       <a href="{inquiry_url}" style="display:block;text-align:center;margin:24px 0 10px;background:#6f1d2b;color:#fff;text-decoration:none;padding:15px;border-radius:8px;font-weight:bold">
         Submit Event Inquiry
       </a>
@@ -2040,9 +2044,9 @@ Siena Restaurant and Bar
   </div>
 </body>
 </html>"""
-    email_sent = send_email(email, subject, html_body, text_body)
+    email_sent = send_email(email, subject, html_body, text_body) if email else False
 
-    sms_body = (f"Hi {first_name}, for parties of {party_size} guests please submit a request at "
+    sms_body = (f"Hi {first_name}, for parties of {party_text} please submit a request at "
                 f"{inquiry_url} so our team can arrange your visit. Questions? Call {RESTAURANT_PHONE}.")
     sms_sent = send_sms(phone, sms_body)
 
