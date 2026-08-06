@@ -673,12 +673,20 @@ def normalize_phone(value: str) -> str:
     """Best-effort E.164 formatting. A bare 10-digit number is assumed US
     (+1); anything else without a leading "+" is assumed to already include
     a country code (e.g. "923155198221") rather than silently dropped, since
-    guests and the phone agent won't always type the "+"."""
+    guests and the phone agent won't always type the "+". A leading 0 is
+    never a valid country code -- it's a national trunk prefix (e.g.
+    Pakistan's local "03155198221" instead of "923155198221") that would
+    otherwise get "+" blindly prepended into a guaranteed-invalid "+0..."
+    number Twilio rejects outright, so that case is left unformattable
+    (empty string, same silent-skip as any other unrecognized shape)
+    rather than guessing which country's trunk prefix to strip."""
     digits = "".join(ch for ch in (value or "") if ch.isdigit())
     if len(digits) == 10:
         return "+1" + digits
     if len(digits) == 11 and digits.startswith("1"):
         return "+" + digits
+    if digits.startswith("0"):
+        return ""
     if 10 <= len(digits) <= 15:
         return "+" + digits
     return ""
