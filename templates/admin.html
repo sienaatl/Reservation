@@ -178,9 +178,17 @@
   if (!dateInput) return;
 
   function shiftDate(days) {
+    // Built and formatted entirely in local time -- toISOString() converts
+    // to UTC, which silently rolls the date back a day for any timezone
+    // ahead of UTC (e.g. midnight local minus a positive UTC offset lands
+    // on the previous day), making Previous skip 2 days and Next appear to
+    // do nothing.
     const current = new Date(dateInput.value + 'T00:00:00');
     current.setDate(current.getDate() + days);
-    dateInput.value = current.toISOString().slice(0, 10);
+    const year = current.getFullYear();
+    const month = String(current.getMonth() + 1).padStart(2, '0');
+    const day = String(current.getDate()).padStart(2, '0');
+    dateInput.value = `${year}-${month}-${day}`;
     dateInput.form.submit();
   }
 
