@@ -36,7 +36,11 @@
           </div>
           <form method="get" class="dashboard-filter">
             <input type="hidden" name="pin" value="{{ pin or '' }}">
-            <input type="date" name="date" value="{{ date_str }}" onchange="this.form.submit()">
+            <div class="date-nav">
+              <button type="button" class="date-nav-button" id="date-prev" aria-label="Previous day">‹</button>
+              <input type="date" name="date" value="{{ date_str }}" onchange="this.form.submit()" id="dashboard-date-input">
+              <button type="button" class="date-nav-button" id="date-next" aria-label="Next day">›</button>
+            </div>
             <select name="status" onchange="this.form.submit()">
               {% for value,label in [('all','All statuses'),('confirmed','Confirmed'),('seated','Seated'),('walk_in','Walk-ins'),('completed','Completed'),('transferred','Transferred to OpenTable'),('cancelled','Cancelled'),('no_show','No-show')] %}
               <option value="{{ value }}" {% if status_filter==value %}selected{% endif %}>{{ label }}</option>
@@ -166,6 +170,24 @@
 </dialog>
 
 <script>
+// Shifts the dashboard date filter by +/-1 day and resubmits the form,
+// preserving whatever status/search filters are already set since it's
+// the same form, just with the date input's value changed first.
+(function () {
+  const dateInput = document.getElementById('dashboard-date-input');
+  if (!dateInput) return;
+
+  function shiftDate(days) {
+    const current = new Date(dateInput.value + 'T00:00:00');
+    current.setDate(current.getDate() + days);
+    dateInput.value = current.toISOString().slice(0, 10);
+    dateInput.form.submit();
+  }
+
+  document.getElementById('date-prev').addEventListener('click', () => shiftDate(-1));
+  document.getElementById('date-next').addEventListener('click', () => shiftDate(1));
+})();
+
 // Moves a reservation row between the Reservation Book's grouped sections
 // when its status changes via the row's status dropdown (any status is
 // reachable directly -- e.g. Cancelled without going through Seated first),
