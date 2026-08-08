@@ -1,7 +1,10 @@
 {% extends "base.html" %}
 {% block content %}
 <section class="admin-shell">
-<div class="admin-heading"><div><p class="eyebrow">Dining room</p><h1>Server Sections</h1></div></div>
+<div class="admin-heading">
+  <div><p class="eyebrow">Dining room</p><h1>Server Sections</h1></div>
+  <button class="primary-button" type="button" onclick="document.getElementById('add-server-modal').showModal()">+ Add Server</button>
+</div>
 <div class="stats-grid">{% for s in loads %}<article>
   <form method="post" class="server-rename-form">
     <input type="hidden" name="pin" value="{{ pin }}">
@@ -13,9 +16,21 @@
   <strong>{{ s.covers }}</strong><small>{{ s.parties }} parties</small>
   <small class="server-tables">{% if s.table_names %}Tables: {{ s.table_names }}{% else %}No tables assigned{% endif %}</small>
 </article>{% endfor %}</div>
-<div class="ops-grid">
-<form class="panel" method="post"><input type="hidden" name="pin" value="{{ pin }}"><input type="hidden" name="action" value="add"><h2>Add server</h2><label>Name<input name="name" required></label><button class="seat-action">Add Server</button></form>
 <section class="panel"><h2>Assign tables</h2>
 {% for t in tables %}<form method="post" class="ops-row"><input type="hidden" name="pin" value="{{ pin }}"><input type="hidden" name="action" value="assign"><input type="hidden" name="table_id" value="{{ t.id }}"><div><strong>{{ t.name }}</strong><small>{{ t.area }} · {{ t.capacity }} seats</small></div><select name="server_id" onchange="this.form.submit()"><option value="">Unassigned</option>{% for s in servers %}<option value="{{ s.id }}" {% if t.server_id==s.id %}selected{% endif %}>{{ s.name }}</option>{% endfor %}</select></form>{% endfor %}
-</section></div></section>
+</section>
+</section>
+
+<dialog id="add-server-modal" class="booking-dialog">
+  <form method="post">
+    <input type="hidden" name="pin" value="{{ pin }}">
+    <input type="hidden" name="action" value="add">
+    <div class="dialog-head">
+      <div><p class="eyebrow">DINING ROOM</p><h2>Add Server</h2></div>
+      <button type="button" class="dialog-close" onclick="this.closest('dialog').close()">×</button>
+    </div>
+    <label>Name<input name="name" required></label>
+    <button class="primary-button full-button" type="submit">Add Server</button>
+  </form>
+</dialog>
 {% endblock %}
