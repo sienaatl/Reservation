@@ -167,6 +167,15 @@ small{color:var(--muted)}
 .stats-grid strong{display:block;font-size:30px;margin-top:8px}
 @media(max-width:800px){.stats-grid{grid-template-columns:repeat(2,1fr)}}
 
+/* Servers page: inline rename form + assigned-tables line inside each
+   stats-grid card, styled to match the plain <span> label it replaces. */
+.server-rename-form{display:flex;align-items:center;gap:6px;margin-bottom:2px}
+.server-name-input{width:auto;flex:1;min-width:0;border:1px solid transparent;background:transparent;padding:2px 4px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);border-radius:4px}
+.server-name-input:hover{border-color:var(--line)}
+.server-name-input:focus{border-color:var(--burgundy);background:#fff;outline:none;text-transform:none}
+.server-rename-form .small-action-button{padding:4px 8px;font-size:11px;flex-shrink:0}
+.server-tables{display:block;margin-top:6px;color:var(--muted);font-size:12px}
+
 .date-filter{display:flex;gap:8px;align-items:center}
 .date-filter input{width:auto;min-width:170px}
 

@@ -2938,6 +2938,11 @@ def servers_page():
             name = request.form.get("name", "").strip()
             if name:
                 conn.execute("INSERT INTO servers(name) VALUES (?) ON CONFLICT(name) DO NOTHING", (name,))
+        elif action == "rename":
+            server_id = request.form.get("server_id", type=int)
+            new_name = request.form.get("name", "").strip()
+            if server_id and new_name:
+                conn.execute("UPDATE servers SET name=? WHERE id=?", (new_name, server_id))
         elif action == "assign":
             table_id = request.form.get("table_id", type=int)
             server_id = request.form.get("server_id", type=int)
@@ -2956,9 +2961,10 @@ def servers_page():
     loads = conn.execute("""
         SELECT s.id, s.name,
                COUNT(DISTINCT r.id) AS parties,
-               COALESCE(SUM(r.party_size),0) AS covers
+               COALESCE(SUM(r.party_size),0) AS covers,
+               string_agg(DISTINCT t.name, ', ' ORDER BY t.name) AS table_names
         FROM servers s
-        LEFT JOIN restaurant_tables t ON t.server_id=s.id
+        LEFT JOIN restaurant_tables t ON t.server_id=s.id AND t.active=1
         LEFT JOIN reservations r ON r.table_id=t.id
           AND r.reservation_at::date=?::date
           AND r.status IN ('confirmed','seated','completed','walk_in')
