@@ -2976,6 +2976,64 @@ def servers_page():
                            pin=pin, app_name=APP_NAME)
 
 
+@app.get("/api/servers")
+def api_servers():
+    """Real-time server/table assignment + load, as JSON -- for the AI
+    agent or any external integration that needs to know which server owns
+    which table and how busy each one currently is. Same underlying query
+    as the Servers page. Optional ?date=YYYY-MM-DD controls which day's
+    parties/covers are counted (defaults to today); the table<->server
+    assignment itself isn't date-specific, only the load stats are."""
+    require_admin()
+    date_str = request.args.get("date") or datetime.now().strftime("%Y-%m-%d")
+    conn = db()
+    tables = conn.execute("""
+        SELECT t.id, t.name, t.area, t.capacity, t.server_id, s.name AS server_name
+        FROM restaurant_tables t LEFT JOIN servers s ON s.id=t.server_id
+        WHERE t.active=1 ORDER BY t.area, t.name
+    """).fetchall()
+    loads = conn.execute("""
+        SELECT s.id, s.name,
+               COUNT(DISTINCT r.id) AS parties,
+               COALESCE(SUM(r.party_size),0) AS covers,
+               string_agg(DISTINCT t.name, ', ' ORDER BY t.name) AS table_names
+        FROM servers s
+        LEFT JOIN restaurant_tables t ON t.server_id=s.id AND t.active=1
+        LEFT JOIN reservations r ON r.table_id=t.id
+          AND r.reservation_at::date=?::date
+          AND r.status IN ('confirmed','seated','completed','walk_in')
+        WHERE s.active=1
+        GROUP BY s.id, s.name ORDER BY s.name
+    """, (date_str,)).fetchall()
+    conn.close()
+
+    return jsonify({
+        "date": date_str,
+        "server_count": len(loads),
+        "servers": [
+            {
+                "id": s["id"],
+                "name": s["name"],
+                "parties": s["parties"],
+                "covers": s["covers"],
+                "tables": [name.strip() for name in s["table_names"].split(",")] if s["table_names"] else [],
+            }
+            for s in loads
+        ],
+        "tables": [
+            {
+                "id": t["id"],
+                "name": t["name"],
+                "area": t["area"],
+                "capacity": t["capacity"],
+                "server_id": t["server_id"],
+                "server_name": t["server_name"],
+            }
+            for t in tables
+        ],
+    })
+
+
 @app.route("/guests", methods=["GET", "POST"])
 def guests_page():
     require_staff_login()
