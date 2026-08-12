@@ -739,7 +739,17 @@ def reservation_sms_text(reservation, kind: str = "confirmed") -> str:
                 f"Please call {RESTAURANT_PHONE} if your arrival changes.")
     if kind == "review":
         return f"Thanks for dining at Siena, {name}! Feedback: {REVIEW_URL} Reply STOP to opt out."
-    return f"Hi {name}, Siena confirmed {date_text}, party {party}. {manage_link}"
+    # "confirmed" -- deliberately the one exception to the length note above:
+    # requested explicitly in this exact multi-line format. At ~229 chars
+    # this spans 2 concatenated SMS segments, reopening the same
+    # international-delivery risk the shorter templates above were built to
+    # avoid (see normalize_phone()/the earlier truncation fix).
+    confirm_date = parse_dt(reservation["reservation_at"]).strftime("%b %-d")
+    confirm_time = parse_dt(reservation["reservation_at"]).strftime("%-I:%M %p")
+    return (f"Siena Restaurant: Reservation confirmed for {party} guests on {confirm_date} at {confirm_time}.\n\n"
+            f"{RESTAURANT_ADDRESS}\n\n"
+            f"Manage: {manage_link}\n\n"
+            f"Reply STOP to opt out.")
 
 
 def send_reservation_sms(reservation, kind: str = "confirmed") -> bool:
