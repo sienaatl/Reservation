@@ -46,7 +46,7 @@ SMS_ENABLED = os.getenv("SMS_ENABLED", "false").lower() in {"1", "true", "yes", 
 SMS_REMINDER_24H = os.getenv("SMS_REMINDER_24H", "true").lower() in {"1", "true", "yes", "on"}
 SMS_REMINDER_2H = os.getenv("SMS_REMINDER_2H", "true").lower() in {"1", "true", "yes", "on"}
 CRON_SECRET = os.getenv("CRON_SECRET", "")
-REVIEW_URL = os.getenv("REVIEW_URL", "https://www.google.com/search?q=Siena+Restaurant+Alpharetta+reviews")
+REVIEW_URL = os.getenv("REVIEW_URL", "https://g.page/r/CYL3k1UEWlCKEBM/review")
 BIRTHDAY_SMS_ENABLED = os.getenv("BIRTHDAY_SMS_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
 REVIEW_SMS_ENABLED = os.getenv("REVIEW_SMS_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
 RUNNING_LATE_MINUTES = int(os.getenv("RUNNING_LATE_MINUTES", "15"))
@@ -349,6 +349,7 @@ def init_db():
         "ALTER TABLE reservations ADD COLUMN IF NOT EXISTS sms_cancelled_sent_at TEXT",
         "ALTER TABLE reservations ADD COLUMN IF NOT EXISTS running_late_at TEXT",
         "ALTER TABLE reservations ADD COLUMN IF NOT EXISTS review_sms_sent_at TEXT",
+        "ALTER TABLE reservations ADD COLUMN IF NOT EXISTS review_email_sent_at TEXT",
         "ALTER TABLE reservations ADD COLUMN IF NOT EXISTS marketing_opt_in INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE reservations ADD COLUMN IF NOT EXISTS seated_at TEXT",
         "ALTER TABLE reservations ADD COLUMN IF NOT EXISTS completed_at TEXT",
@@ -816,6 +817,61 @@ def running_late(token):
     return render_template("message_status.html", app_name=APP_NAME,
                            title="We received your update",
                            message=f"Your reservation has been marked approximately {RUNNING_LATE_MINUTES} minutes late. We will hold your table according to restaurant policy.")
+
+
+def send_review_request(reservation) -> dict:
+    """Sends the post-dining review request immediately when a reservation
+    is marked completed (dashboard dropdown or floor plan), rather than
+    waiting on the scheduled process_review_requests() sweep below. Sends
+    on whichever channel(s) are available: email whenever reservation['email']
+    is set (unconditional, same as every other transactional email in this
+    app), SMS only if the guest opted in (send_reservation_sms() already
+    enforces this). Marks review_sms_sent_at/review_email_sent_at so the
+    scheduled sweep never re-sends the SMS side of this."""
+    name = (reservation["guest_name"] or "").split()[0] or "there"
+    now = datetime.now().isoformat(timespec="seconds")
+    email_sent = False
+    sms_sent = False
+
+    if reservation["email"]:
+        subject = "Thank you for dining with us at Siena!"
+        text_body = (f"Hi {name}, thank you for dining with us at Siena! We hope you enjoyed your "
+                     f"experience. We'd love to hear your feedback. Please take a moment to leave "
+                     f"us a Google review:\n\n{REVIEW_URL}\n\n"
+                     f"Thank you for supporting Siena! ❤️")
+        html_body = f"""<!doctype html>
+<html>
+<body style="margin:0;background:#f5f0e8;font-family:Arial,sans-serif;color:#211b18">
+  <div style="max-width:620px;margin:32px auto;background:#ffffff;border-radius:14px;overflow:hidden;border:1px solid #ddd2c4">
+    <div style="background:#080808;padding:26px;text-align:center">
+      <div style="color:#fff;font-family:Georgia,serif;font-size:36px;font-style:italic">Siena</div>
+      <div style="color:#c9a25d;letter-spacing:4px;font-size:10px">RESTAURANT AND BAR</div>
+    </div>
+    <div style="padding:30px">
+      <h1 style="font-family:Georgia,serif;font-size:26px;margin:0 0 16px">Thank you for dining with us!</h1>
+      <p style="color:#6f655e">Hi {name}, thank you for dining with us at Siena! We hope you enjoyed your experience. We'd love to hear your feedback.</p>
+      <a href="{REVIEW_URL}" style="display:block;text-align:center;margin:24px 0 10px;background:#6f1d2b;color:#fff;text-decoration:none;padding:15px;border-radius:8px;font-weight:bold">
+        Leave a Google Review
+      </a>
+      <p style="color:#6f655e;text-align:center">Thank you for supporting Siena! &#10084;&#65039;</p>
+    </div>
+  </div>
+</body>
+</html>"""
+        email_sent = send_email(reservation["email"], subject, html_body, text_body)
+
+    sms_sent = send_reservation_sms(reservation, "review")
+
+    if email_sent or sms_sent:
+        conn = db()
+        if email_sent:
+            conn.execute("UPDATE reservations SET review_email_sent_at=? WHERE id=?", (now, reservation["id"]))
+        if sms_sent:
+            conn.execute("UPDATE reservations SET review_sms_sent_at=? WHERE id=?", (now, reservation["id"]))
+        conn.commit()
+        conn.close()
+
+    return {"email_sent": email_sent, "sms_sent": sms_sent}
 
 
 def process_review_requests(now: datetime | None = None) -> dict:
@@ -2573,6 +2629,11 @@ def update_table_status(reservation_id):
     else:
         conn.execute("UPDATE reservations SET status=? WHERE id=?", (status, reservation_id))
     conn.commit()
+
+    if status == "completed" and not reservation["review_sms_sent_at"] and not reservation["review_email_sent_at"]:
+        updated = conn.execute("SELECT * FROM reservations WHERE id = ?", (reservation_id,)).fetchone()
+        send_review_request(updated)
+
     conn.close()
     return jsonify({"ok": True})
 
@@ -3336,17 +3397,32 @@ def update_status(reservation_id):
     if status not in allowed:
         abort(400)
     conn = db()
+    reservation = conn.execute("SELECT * FROM reservations WHERE id=?", (reservation_id,)).fetchone()
+    if not reservation:
+        conn.close()
+        abort(404)
     if status == "confirmed":
         # Same Bar-stool release as update_table_status(): this dashboard dropdown
         # is a second path that can also revert Seated -> Confirmed, so it needs
         # the same reservation_tables cleanup to avoid stale stool assignments.
-        reservation = conn.execute("SELECT table_id FROM reservations WHERE id=?", (reservation_id,)).fetchone()
-        if reservation and reservation["table_id"]:
+        if reservation["table_id"]:
             table = conn.execute("SELECT area FROM restaurant_tables WHERE id=?", (reservation["table_id"],)).fetchone()
             if table and table["area"] == "Bar":
                 conn.execute("DELETE FROM reservation_tables WHERE reservation_id=?", (reservation_id,))
-    conn.execute("UPDATE reservations SET status = ? WHERE id = ?", (status, reservation_id))
+    if status == "completed":
+        # This route previously never set completed_at at all -- needed both
+        # for the immediate review-request send below and so completed-here
+        # reservations aren't silently invisible to the scheduled sweep too.
+        conn.execute("UPDATE reservations SET status=?, completed_at=? WHERE id=?",
+                     (status, datetime.now().isoformat(timespec="minutes"), reservation_id))
+    else:
+        conn.execute("UPDATE reservations SET status = ? WHERE id = ?", (status, reservation_id))
     conn.commit()
+
+    if status == "completed" and not reservation["review_sms_sent_at"] and not reservation["review_email_sent_at"]:
+        updated = conn.execute("SELECT * FROM reservations WHERE id = ?", (reservation_id,)).fetchone()
+        send_review_request(updated)
+
     conn.close()
     audit("update_reservation_status", "reservation", reservation_id, {"status": status})
     return redirect(url_for("admin", date=request.form.get("date"), pin=request.form.get("pin")))
