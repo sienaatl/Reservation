@@ -153,6 +153,7 @@ async function loadFloor(keepDetails = false) {
     // :hover scale effect in style.css can compose with rotation instead
     // of an inline transform silently overriding it on hover.
     el.style.setProperty('--table-rotation', `${t.rotation || 0}deg`);
+    el.dataset.tableId = t.id;
     el.setAttribute('aria-label', `Table ${t.name}, ${t.capacity} seat${t.capacity === 1 ? '' : 's'}, ${t.display_status}`);
     el.title = `${t.capacity} seat${t.capacity === 1 ? '' : 's'}`;
     const guest = t.reservation ? `<em>${esc(t.reservation.guest_name.split(' ')[0])}</em>` : '';
@@ -354,18 +355,35 @@ function showEditPanel(t) {
     document.getElementById('edit-prefix').textContent = AREA_PREFIX[e.target.value] || '';
   });
   document.getElementById('edit-table-form').addEventListener('submit', (e) => saveTableEdit(e, t));
+  activeRotationSync = () => syncRotationPreview(t.id);
+  document.getElementById('edit-rotation').addEventListener('input', activeRotationSync);
+}
+
+// Reads the live Rotation input and applies it straight to the matching
+// table's --table-rotation custom property, so the shape on the canvas spins
+// in real time -- before Save Changes is clicked -- instead of only updating
+// after the next full reload. Looked up fresh (not captured once) because
+// loadFloor() rebuilds the canvas nodes on every save.
+let activeRotationSync = null;
+function syncRotationPreview(tableId) {
+  const el = canvas.querySelector(`[data-table-id="${tableId}"]`);
+  const input = document.getElementById('edit-rotation');
+  if (!el || !input) return;
+  el.style.setProperty('--table-rotation', `${parseFloat(input.value) || 0}deg`);
 }
 
 function bumpRotation(delta) {
   const input = document.getElementById('edit-rotation');
   const val = ((parseFloat(input.value) || 0) + delta % 360 + 360) % 360;
   input.value = Math.round(val);
+  if (activeRotationSync) activeRotationSync();
 }
 
 async function saveTableEdit(e, t) {
   e.preventDefault();
   const errorEl = document.getElementById('edit-table-error');
   errorEl.style.display = 'none';
+  const saveBtn = e.target.querySelector('button[type="submit"]');
 
   const newArea = document.getElementById('edit-area').value;
   const newNumber = document.getElementById('edit-number').value.trim();
@@ -394,9 +412,41 @@ async function saveTableEdit(e, t) {
   if (!response.ok || !data.ok) {
     errorEl.textContent = data.error || 'Unable to save changes.';
     errorEl.style.display = 'block';
+    flashSaveState(saveBtn, 'error');
     return;
   }
+  flashSaveState(saveBtn, 'success');
+  showToast(`Table ${t.name} updated successfully.`, 'success');
   await loadFloor(true);
+}
+
+// Briefly swaps the Save Changes button's label/color to confirm the result,
+// then reverts -- so staff get instant pass/fail feedback without needing a
+// separate status area. Purely visual: the fetch above already succeeded or
+// failed before this runs.
+const SAVE_BTN_LABEL = 'Save Changes';
+function flashSaveState(btn, outcome) {
+  if (!btn) return;
+  const isSuccess = outcome === 'success';
+  btn.textContent = isSuccess ? '✓ Saved' : 'Save Failed — Try Again';
+  btn.classList.toggle('save-success', isSuccess);
+  btn.classList.toggle('save-error', !isSuccess);
+  setTimeout(() => {
+    btn.textContent = SAVE_BTN_LABEL;
+    btn.classList.remove('save-success', 'save-error');
+  }, isSuccess ? 1800 : 2500);
+}
+
+function showToast(message, type) {
+  const toast = document.createElement('div');
+  toast.className = `floor-toast ${type}`;
+  toast.textContent = message;
+  document.body.appendChild(toast);
+  requestAnimationFrame(() => toast.classList.add('show'));
+  setTimeout(() => {
+    toast.classList.remove('show');
+    setTimeout(() => toast.remove(), 250);
+  }, 2500);
 }
 
 async function deleteTable(tableId, name) {
