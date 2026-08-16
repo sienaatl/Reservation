@@ -340,6 +340,7 @@ def init_db():
         "ALTER TABLE restaurant_tables ADD COLUMN IF NOT EXISTS shape TEXT NOT NULL DEFAULT 'rect'",
         "ALTER TABLE restaurant_tables ADD COLUMN IF NOT EXISTS active INTEGER NOT NULL DEFAULT 1",
         "ALTER TABLE restaurant_tables ADD COLUMN IF NOT EXISTS server_id INTEGER",
+        "ALTER TABLE restaurant_tables ADD COLUMN IF NOT EXISTS rotation REAL NOT NULL DEFAULT 0",
         "ALTER TABLE reservations ADD COLUMN IF NOT EXISTS manage_token TEXT",
         "ALTER TABLE reservations ADD COLUMN IF NOT EXISTS email_sent_at TEXT",
         "ALTER TABLE reservations ADD COLUMN IF NOT EXISTS sms_opt_in INTEGER NOT NULL DEFAULT 0",
@@ -1685,6 +1686,16 @@ def api_hours():
 
 
 BOOKING_SOURCES = ("website", "ai_agent", "phone", "walk_in", "other")
+
+# Floor plan table management: area -> table-name prefix (e.g. "Bar" tables
+# are always named B1, B2, ... -- the prefix is derived from the area, never
+# typed by staff, so a table can never end up misfiled under the wrong area
+# by a naming mistake). TABLE_SHAPES only has "rect"/"round" because that's
+# all style.css has real CSS for today (.floor-table default vs .round);
+# "square"/"oval" from the floor-plan spec are represented via those same
+# two shapes with an equal or unequal width/height rather than new CSS.
+AREA_TABLE_PREFIX = {"Covered Patio": "P", "Main Dining": "D", "Bar": "B"}
+TABLE_SHAPES = ("rect", "round")
 
 
 def _create_reservation(guest_name, email, phone, party_size, reservation_at_raw,
@@ -3438,22 +3449,169 @@ def update_status(reservation_id):
     return redirect(url_for("admin", date=request.form.get("date"), pin=request.form.get("pin")))
 
 
-@app.post("/admin/tables")
-def add_table():
+@app.post("/api/tables")
+def create_table():
+    """Creates a new floor-plan table. The name's prefix is always derived
+    from area (see AREA_TABLE_PREFIX) -- staff type only the number, never
+    the prefix, so a table can never end up misfiled under the wrong area
+    by a typo. x/y/width/height/rotation are all optional and fall back to
+    a sensible default so a table dropped without an explicit position
+    still lands somewhere visible on the canvas, ready to be dragged."""
     require_admin()
-    name = request.form.get("name", "").strip()
-    capacity = request.form.get("capacity", type=int)
-    area = request.form.get("area", "").strip() or "Covered Patio"
-    if not name or not capacity:
-        abort(400)
+    data = request.get_json(silent=True) or request.form
+
+    area = (data.get("area") or "").strip()
+    number = (data.get("number") or "").strip()
+    if area not in AREA_TABLE_PREFIX:
+        return jsonify({"ok": False, "error": "Choose a valid area (Covered Patio, Main Dining, or Bar)."}), 400
+    if not number:
+        return jsonify({"ok": False, "error": "Table number is required."}), 400
+
+    try:
+        capacity = int(data.get("capacity"))
+    except (TypeError, ValueError):
+        capacity = None
+    if not capacity or capacity < 1:
+        return jsonify({"ok": False, "error": "Capacity must be at least 1 guest."}), 400
+
+    shape = (data.get("shape") or "rect").strip()
+    if shape not in TABLE_SHAPES:
+        shape = "rect"
+
+    try:
+        width = float(data["width"]) if data.get("width") not in (None, "") else 7.0
+        height = float(data["height"]) if data.get("height") not in (None, "") else 12.0
+        x = float(data["x"]) if data.get("x") not in (None, "") else 45.0
+        y = float(data["y"]) if data.get("y") not in (None, "") else 45.0
+        rotation = float(data["rotation"]) if data.get("rotation") not in (None, "") else 0.0
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "Width, height, position, and rotation must be numbers."}), 400
+    rotation = rotation % 360
+
+    name = f"{AREA_TABLE_PREFIX[area]}{number}"
+
     conn = db()
-    conn.execute(
-        "INSERT INTO restaurant_tables(name, capacity, area) VALUES (?, ?, ?)",
-        (name, capacity, area)
-    )
+    try:
+        conn.execute("""
+            INSERT INTO restaurant_tables(name, capacity, area, x, y, width, height, shape, rotation, active)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+        """, (name, capacity, area, x, y, width, height, shape, rotation))
+        conn.commit()
+    except psycopg2.IntegrityError:
+        conn.rollback(); conn.close()
+        return jsonify({"ok": False, "error": f"Table {name} already exists. Please choose another number."}), 409
+
+    table = conn.execute("SELECT * FROM restaurant_tables WHERE name=?", (name,)).fetchone()
+    conn.close()
+    audit("create_table", "restaurant_table", table["id"], {"name": name, "area": area})
+    return jsonify({"ok": True, "table": dict(table)}), 201
+
+
+@app.post("/api/tables/<int:table_id>")
+def edit_table(table_id):
+    """Edits an existing table's configuration -- capacity, shape, size,
+    position, rotation, and/or area+number (which are only ever changed
+    together, matching how the Add Table modal always sends both). Every
+    field is optional and falls back to the table's current value, so a
+    drag-end position save can POST just {x, y} without disturbing
+    anything else. The internal id never changes, so reservations that
+    reference table_id by id (not by display name) are never affected by
+    a rename or an area move."""
+    require_admin()
+    conn = db()
+    table = conn.execute("SELECT * FROM restaurant_tables WHERE id=?", (table_id,)).fetchone()
+    if not table:
+        conn.close()
+        return jsonify({"ok": False, "error": "Table not found."}), 404
+
+    data = request.get_json(silent=True) or request.form
+
+    area = table["area"]
+    name = table["name"]
+    if data.get("number") is not None or data.get("area") is not None:
+        area = (data.get("area") or table["area"]).strip()
+        if area not in AREA_TABLE_PREFIX:
+            conn.close()
+            return jsonify({"ok": False, "error": "Choose a valid area (Covered Patio, Main Dining, or Bar)."}), 400
+        number = (data.get("number") or "").strip()
+        if not number:
+            conn.close()
+            return jsonify({"ok": False, "error": "Table number is required when changing the area or number."}), 400
+        name = f"{AREA_TABLE_PREFIX[area]}{number}"
+
+    try:
+        capacity = int(data["capacity"]) if data.get("capacity") not in (None, "") else table["capacity"]
+    except (TypeError, ValueError):
+        conn.close()
+        return jsonify({"ok": False, "error": "Capacity must be a whole number."}), 400
+    if capacity < 1:
+        conn.close()
+        return jsonify({"ok": False, "error": "Capacity must be at least 1 guest."}), 400
+
+    shape = (data.get("shape") or table["shape"]).strip()
+    if shape not in TABLE_SHAPES:
+        shape = table["shape"]
+
+    try:
+        width = float(data["width"]) if data.get("width") not in (None, "") else table["width"]
+        height = float(data["height"]) if data.get("height") not in (None, "") else table["height"]
+        x = float(data["x"]) if data.get("x") not in (None, "") else table["x"]
+        y = float(data["y"]) if data.get("y") not in (None, "") else table["y"]
+        rotation = float(data["rotation"]) if data.get("rotation") not in (None, "") else table["rotation"]
+    except (TypeError, ValueError):
+        conn.close()
+        return jsonify({"ok": False, "error": "Width, height, position, and rotation must be numbers."}), 400
+    rotation = rotation % 360
+
+    try:
+        conn.execute("""
+            UPDATE restaurant_tables
+            SET name=?, area=?, capacity=?, shape=?, width=?, height=?, x=?, y=?, rotation=?
+            WHERE id=?
+        """, (name, area, capacity, shape, width, height, x, y, rotation, table_id))
+        conn.commit()
+    except psycopg2.IntegrityError:
+        conn.rollback(); conn.close()
+        return jsonify({"ok": False, "error": f"Table {name} already exists. Please choose another number."}), 409
+
+    updated = conn.execute("SELECT * FROM restaurant_tables WHERE id=?", (table_id,)).fetchone()
+    conn.close()
+    audit("edit_table", "restaurant_table", table_id, {"name": name, "area": area})
+    return jsonify({"ok": True, "table": dict(updated)})
+
+
+@app.post("/api/tables/<int:table_id>/delete")
+def delete_table(table_id):
+    """Soft-deletes a table (active=0) rather than removing the row, so
+    historical reservations that reference this table_id stay intact.
+    Blocked if the table has any upcoming active reservation -- staff must
+    move or cancel those first. Note: the table's name stays permanently
+    reserved after a soft delete (name has a UNIQUE constraint in the
+    schema), so it can't be reused for a different new table later."""
+    require_admin()
+    conn = db()
+    table = conn.execute("SELECT * FROM restaurant_tables WHERE id=?", (table_id,)).fetchone()
+    if not table:
+        conn.close()
+        return jsonify({"ok": False, "error": "Table not found."}), 404
+
+    upcoming = conn.execute("""
+        SELECT COUNT(*) n FROM reservations
+        WHERE table_id=? AND status IN ('confirmed','seated','walk_in')
+          AND reservation_at::timestamp >= ?::timestamp
+    """, (table_id, datetime.now().isoformat(timespec="minutes"))).fetchone()["n"]
+    if upcoming:
+        conn.close()
+        return jsonify({
+            "ok": False,
+            "error": f"Table {table['name']} has {upcoming} upcoming reservation(s). Please move or cancel those reservations before removing the table."
+        }), 409
+
+    conn.execute("UPDATE restaurant_tables SET active=0, server_id=NULL WHERE id=?", (table_id,))
     conn.commit()
     conn.close()
-    return redirect(url_for("admin", pin=request.form.get("pin")))
+    audit("delete_table", "restaurant_table", table_id, {"name": table["name"]})
+    return jsonify({"ok": True})
 
 
 # Initialize the schema when the application is imported by Gunicorn.

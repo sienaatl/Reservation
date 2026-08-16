@@ -15,6 +15,8 @@
       </select>
       <input id="floor-at" type="datetime-local" value="{{ now }}">
       <button id="refresh-floor">Refresh</button>
+      <button id="add-table-btn" type="button" class="outline-button">+ Add Table</button>
+      <button id="edit-layout-btn" type="button" class="outline-button">Edit Layout</button>
     </div>
   </div>
 
@@ -38,13 +40,52 @@
   </div>
 </section>
 
+<dialog id="add-table-modal" class="booking-dialog">
+  <form id="add-table-form">
+    <div class="dialog-head">
+      <div><p class="eyebrow">FLOOR PLAN</p><h2>Add Table</h2></div>
+      <button type="button" class="dialog-close" onclick="this.closest('dialog').close()">×</button>
+    </div>
+    <div class="dialog-grid">
+      <label>Area
+        <select id="add-table-area">
+          <option value="Covered Patio">Covered Patio</option>
+          <option value="Main Dining">Main Dining</option>
+          <option value="Bar">Bar</option>
+        </select>
+      </label>
+      <label>Table Number
+        <div class="prefix-input"><span id="add-table-prefix">P</span><input id="add-table-number" required inputmode="numeric" placeholder="e.g. 26"></div>
+      </label>
+      <label>Capacity<input id="add-table-capacity" type="number" min="1" value="2" required></label>
+      <label>Shape
+        <select id="add-table-shape">
+          <option value="rect">Rectangle</option>
+          <option value="round">Round</option>
+        </select>
+      </label>
+      <label>Width (%)<input id="add-table-width" type="number" min="2" max="30" step="0.5" value="7"></label>
+      <label>Height (%)<input id="add-table-height" type="number" min="2" max="30" step="0.5" value="12"></label>
+    </div>
+    <div id="add-table-error" class="flash error" style="display:none"></div>
+    <button class="primary-button full-button" type="submit">Create Table</button>
+  </form>
+</dialog>
+
 <script>
 const pin = {{ pin|tojson }};
 const canvas = document.getElementById('floor-canvas');
 const details = document.getElementById('table-details');
 const areaSelect = document.getElementById('area');
 const atInput = document.getElementById('floor-at');
+const editLayoutBtn = document.getElementById('edit-layout-btn');
 let currentFloorData = null;
+let editMode = false;
+
+// Area -> table-name prefix, mirrors AREA_TABLE_PREFIX in app.py. The
+// prefix is always shown, never typed, so staff can't misfile a table
+// under the wrong area with a typo.
+const AREA_PREFIX = {'Covered Patio': 'P', 'Main Dining': 'D', 'Bar': 'B'};
 
 function esc(value) {
   return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -56,24 +97,44 @@ function timeLabel(value) {
   return date.toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'});
 }
 
+// Not every existing table follows the prefix+number convention (a few
+// seeded tables are just plain numbers like "2", "3", "4") -- fall back to
+// showing the full name as the "number" for those rather than guessing.
+function currentNumber(t) {
+  const prefix = AREA_PREFIX[t.area] || '';
+  return t.name.startsWith(prefix) ? t.name.slice(prefix.length) : t.name;
+}
+
 async function loadFloor(keepDetails = false) {
   const url = `/api/floorplan?pin=${encodeURIComponent(pin)}&area=${encodeURIComponent(areaSelect.value)}&at=${encodeURIComponent(atInput.value)}`;
   const response = await fetch(url);
   const data = await response.json();
   currentFloorData = data;
   canvas.innerHTML = '';
+  canvas.classList.toggle('edit-mode', editMode);
 
   data.tables.forEach(t => {
     const el = document.createElement('button');
+    el.type = 'button';
     el.className = `floor-table ${t.shape} ${t.display_status} ${t.reservation?.timer_state || ''} ${t.reservation?.outside_hours ? 'outside-hours' : ''}`;
     el.style.left = `${t.x}%`;
     el.style.top = `${t.y}%`;
     el.style.width = `${t.width}%`;
     el.style.height = `${t.height}%`;
+    // Set via a custom property (not a direct transform) so the existing
+    // :hover scale effect in style.css can compose with rotation instead
+    // of an inline transform silently overriding it on hover.
+    el.style.setProperty('--table-rotation', `${t.rotation || 0}deg`);
     el.setAttribute('aria-label', `Table ${t.name}, ${t.display_status}`);
     const guest = t.reservation ? `<em>${esc(t.reservation.guest_name.split(' ')[0])}</em>` : '';
     el.innerHTML = `<strong>${esc(t.name)}</strong><small>${t.capacity} seat${t.capacity === 1 ? '' : 's'}</small>${guest}`;
-    el.addEventListener('click', () => showDetails(t));
+
+    if (editMode) {
+      el.addEventListener('mousedown', (e) => startDrag(e, el, t));
+      el.addEventListener('touchstart', (e) => startDrag(e, el, t), {passive: false});
+    } else {
+      el.addEventListener('click', () => showDetails(t));
+    }
     canvas.appendChild(el);
   });
 
@@ -82,12 +143,86 @@ async function loadFloor(keepDetails = false) {
   ).join('');
 
   if (!keepDetails) {
-    details.innerHTML = 'Tap a table to view details or seat a guest.';
+    details.innerHTML = editMode ? 'Tap a table to edit it, or drag it to reposition.' : 'Tap a table to view details or seat a guest.';
     details.className = 'empty-details';
   }
 }
 
+// --- Drag to reposition (edit mode only) ---------------------------------
+// Position is saved once on drag end, not on every pointer move, per table
+// dragging happens against x/y stored as percentages of the canvas, so
+// pixel deltas are converted to percentages of the canvas's current
+// rendered size.
+let dragState = null;
+const DRAG_THRESHOLD_PX = 4; // below this, treat it as a click (edit) not a drag
+
+function pointerXY(e) {
+  const point = e.touches ? e.touches[0] : e;
+  return { x: point.clientX, y: point.clientY };
+}
+
+function startDrag(e, el, t) {
+  e.preventDefault();
+  const { x, y } = pointerXY(e);
+  dragState = {
+    table: t, el, startX: x, startY: y,
+    startLeftPct: t.x, startTopPct: t.y,
+    canvasRect: canvas.getBoundingClientRect(),
+    moved: false,
+  };
+  document.addEventListener('mousemove', onDragMove);
+  document.addEventListener('mouseup', onDragEnd);
+  document.addEventListener('touchmove', onDragMove, {passive: false});
+  document.addEventListener('touchend', onDragEnd);
+}
+
+function onDragMove(e) {
+  if (!dragState) return;
+  e.preventDefault();
+  const { x, y } = pointerXY(e);
+  const dxPx = x - dragState.startX;
+  const dyPx = y - dragState.startY;
+  if (!dragState.moved && Math.hypot(dxPx, dyPx) < DRAG_THRESHOLD_PX) return;
+  dragState.moved = true;
+
+  const dxPct = (dxPx / dragState.canvasRect.width) * 100;
+  const dyPct = (dyPx / dragState.canvasRect.height) * 100;
+  const maxX = 100 - dragState.table.width;
+  const maxY = 100 - dragState.table.height;
+  const newX = Math.max(0, Math.min(maxX, dragState.startLeftPct + dxPct));
+  const newY = Math.max(0, Math.min(maxY, dragState.startTopPct + dyPct));
+  dragState.el.style.left = `${newX}%`;
+  dragState.el.style.top = `${newY}%`;
+  dragState.newX = newX;
+  dragState.newY = newY;
+}
+
+async function onDragEnd() {
+  document.removeEventListener('mousemove', onDragMove);
+  document.removeEventListener('mouseup', onDragEnd);
+  document.removeEventListener('touchmove', onDragMove);
+  document.removeEventListener('touchend', onDragEnd);
+  if (!dragState) return;
+  const { table, moved, newX, newY } = dragState;
+  dragState = null;
+
+  if (!moved) {
+    showDetails(table); // a click, not a drag -- open the edit panel
+    return;
+  }
+  table.x = newX;
+  table.y = newY;
+  await fetch(`/api/tables/${table.id}`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({x: newX, y: newY}),
+  });
+}
+
+// --- Table details / edit panel ------------------------------------------
 async function showDetails(t) {
+  if (editMode) { showEditPanel(t); return; }
+
   details.className = '';
   if (t.reservation) {
     details.innerHTML = `
@@ -151,6 +286,101 @@ async function showDetails(t) {
   }
 }
 
+function showEditPanel(t) {
+  details.className = '';
+  const areaOptions = ['Covered Patio', 'Main Dining', 'Bar'].map(a =>
+    `<option value="${a}" ${t.area === a ? 'selected' : ''}>${a}</option>`
+  ).join('');
+  details.innerHTML = `
+    <h3>Edit Table ${esc(t.name)}</h3>
+    <form id="edit-table-form" class="form-grid">
+      <label>Area<select id="edit-area">${areaOptions}</select></label>
+      <label>Table Number
+        <div class="prefix-input"><span id="edit-prefix">${esc(AREA_PREFIX[t.area] || '')}</span><input id="edit-number" value="${esc(currentNumber(t))}" required></div>
+      </label>
+      <label>Capacity<input id="edit-capacity" type="number" min="1" value="${esc(t.capacity)}" required></label>
+      <label>Shape
+        <select id="edit-shape">
+          <option value="rect" ${t.shape === 'rect' ? 'selected' : ''}>Rectangle</option>
+          <option value="round" ${t.shape === 'round' ? 'selected' : ''}>Round</option>
+        </select>
+      </label>
+      <label>Width (%)<input id="edit-width" type="number" min="2" max="30" step="0.5" value="${esc(t.width)}"></label>
+      <label>Height (%)<input id="edit-height" type="number" min="2" max="30" step="0.5" value="${esc(t.height)}"></label>
+      <label>Rotation (°)
+        <div class="rotation-control">
+          <button type="button" onclick="bumpRotation(-15)">−</button>
+          <input id="edit-rotation" type="number" min="0" max="360" value="${esc(Math.round(t.rotation || 0))}">
+          <button type="button" onclick="bumpRotation(15)">+</button>
+        </div>
+      </label>
+      <p class="muted-copy">Drag the table on the canvas to move it; position saves automatically.</p>
+      <div id="edit-table-error" class="flash error" style="display:none"></div>
+      <div class="table-action-stack">
+        <button type="submit" class="seat-action">Save Changes</button>
+        <button type="button" class="secondary-action" onclick="deleteTable(${t.id}, '${esc(t.name)}')">Delete Table</button>
+      </div>
+    </form>`;
+  document.getElementById('edit-area').addEventListener('change', (e) => {
+    document.getElementById('edit-prefix').textContent = AREA_PREFIX[e.target.value] || '';
+  });
+  document.getElementById('edit-table-form').addEventListener('submit', (e) => saveTableEdit(e, t));
+}
+
+function bumpRotation(delta) {
+  const input = document.getElementById('edit-rotation');
+  const val = ((parseFloat(input.value) || 0) + delta % 360 + 360) % 360;
+  input.value = Math.round(val);
+}
+
+async function saveTableEdit(e, t) {
+  e.preventDefault();
+  const errorEl = document.getElementById('edit-table-error');
+  errorEl.style.display = 'none';
+
+  const newArea = document.getElementById('edit-area').value;
+  const newNumber = document.getElementById('edit-number').value.trim();
+  const body = {
+    capacity: document.getElementById('edit-capacity').value,
+    shape: document.getElementById('edit-shape').value,
+    width: document.getElementById('edit-width').value,
+    height: document.getElementById('edit-height').value,
+    rotation: document.getElementById('edit-rotation').value,
+  };
+  // Only include area/number if staff actually changed one of them -- a
+  // few pre-existing tables ("2", "3", "4") don't follow the prefix+number
+  // convention, so re-deriving an unchanged name could silently rename one
+  // and collide with a real P2/P3/P4.
+  if (newArea !== t.area || newNumber !== currentNumber(t)) {
+    body.area = newArea;
+    body.number = newNumber;
+  }
+
+  const response = await fetch(`/api/tables/${t.id}`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+  });
+  const data = await response.json();
+  if (!response.ok || !data.ok) {
+    errorEl.textContent = data.error || 'Unable to save changes.';
+    errorEl.style.display = 'block';
+    return;
+  }
+  await loadFloor(true);
+}
+
+async function deleteTable(tableId, name) {
+  if (!confirm(`Are you sure you want to remove table ${name}?`)) return;
+  const response = await fetch(`/api/tables/${tableId}/delete`, {method: 'POST'});
+  const data = await response.json();
+  if (!response.ok || !data.ok) {
+    alert(data.error || 'Unable to delete table.');
+    return;
+  }
+  await loadFloor();
+}
+
 async function seatGuest(tableId) {
   const select = document.getElementById('seat-reservation');
   const reservationId = select ? select.value : '';
@@ -188,10 +418,59 @@ async function changeReservationStatus(reservationId, status) {
   await loadFloor();
 }
 
+// --- Add Table modal -------------------------------------------------------
+function updateAddPrefix() {
+  document.getElementById('add-table-prefix').textContent = AREA_PREFIX[document.getElementById('add-table-area').value] || '';
+}
+document.getElementById('add-table-area').addEventListener('change', updateAddPrefix);
+document.getElementById('add-table-btn').addEventListener('click', () => {
+  document.getElementById('add-table-form').reset();
+  document.getElementById('add-table-area').value = areaSelect.value;
+  updateAddPrefix();
+  document.getElementById('add-table-error').style.display = 'none';
+  document.getElementById('add-table-modal').showModal();
+});
+document.getElementById('add-table-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const errorEl = document.getElementById('add-table-error');
+  errorEl.style.display = 'none';
+  const body = {
+    area: document.getElementById('add-table-area').value,
+    number: document.getElementById('add-table-number').value.trim(),
+    capacity: document.getElementById('add-table-capacity').value,
+    shape: document.getElementById('add-table-shape').value,
+    width: document.getElementById('add-table-width').value,
+    height: document.getElementById('add-table-height').value,
+  };
+  const response = await fetch('/api/tables', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+  });
+  const data = await response.json();
+  if (!response.ok || !data.ok) {
+    errorEl.textContent = data.error || 'Unable to create table.';
+    errorEl.style.display = 'block';
+    return;
+  }
+  document.getElementById('add-table-modal').close();
+  areaSelect.value = body.area;
+  await loadFloor();
+});
+
+// --- Edit Layout toggle ------------------------------------------------
+editLayoutBtn.addEventListener('click', () => {
+  editMode = !editMode;
+  editLayoutBtn.textContent = editMode ? 'Done Editing' : 'Edit Layout';
+  editLayoutBtn.classList.toggle('primary-button', editMode);
+  editLayoutBtn.classList.toggle('outline-button', !editMode);
+  loadFloor();
+});
+
 document.getElementById('refresh-floor').addEventListener('click', () => loadFloor());
 areaSelect.addEventListener('change', () => loadFloor());
 atInput.addEventListener('change', () => loadFloor());
 loadFloor();
-setInterval(() => loadFloor(true), 30000);
+setInterval(() => { if (!editMode) loadFloor(true); }, 30000);
 </script>
 {% endblock %}
