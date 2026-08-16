@@ -85,6 +85,11 @@ small{color:var(--muted)}
 .floor-table:hover{transform:rotate(var(--table-rotation,0deg)) scale(1.05);z-index:5}.floor-table.round{border-radius:50%}.floor-table strong{font-size:17px}.floor-table small{opacity:.8;font-size:11px}
 .floor-canvas.edit-mode .floor-table{cursor:move;outline:2px dashed rgba(111,29,43,.4);outline-offset:2px}
 .floor-canvas.edit-mode .floor-table:active{cursor:grabbing}
+.table-chair{position:absolute;background:rgba(255,255,255,.92);pointer-events:none}
+.table-chair.top,.table-chair.bottom{width:30%;max-width:14px;height:6px;border-radius:3px;transform:translateX(-50%)}
+.table-chair.top{top:-6px}
+.table-chair.bottom{bottom:-6px}
+.table-chair.round{width:9px;height:9px;border-radius:50%;top:50%;left:50%;margin:-4.5px 0 0 -4.5px}
 .prefix-input{display:flex;align-items:center;gap:6px}
 .prefix-input span{background:var(--cream);border:1px solid var(--line);border-radius:8px;padding:12px 14px;font-weight:800;color:var(--muted);flex-shrink:0}
 .prefix-input input{flex:1}
