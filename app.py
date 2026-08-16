@@ -9,6 +9,7 @@ import json
 from functools import wraps
 from email.message import EmailMessage
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from urllib.parse import quote
 from xml.sax.saxutils import escape as xml_escape
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, abort, session, Response
@@ -51,6 +52,15 @@ BIRTHDAY_SMS_ENABLED = os.getenv("BIRTHDAY_SMS_ENABLED", "true").lower() in {"1"
 REVIEW_SMS_ENABLED = os.getenv("REVIEW_SMS_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
 RUNNING_LATE_MINUTES = int(os.getenv("RUNNING_LATE_MINUTES", "15"))
 RESTAURANT_TIMEZONE = os.getenv("RESTAURANT_TIMEZONE", "America/New_York")
+
+
+def restaurant_now() -> datetime:
+    """Current wall-clock time in the restaurant's own timezone, naive (to
+    match how reservation_at/business-hours values are stored and compared
+    elsewhere) -- used any time we need "today"/"now" as a default rather
+    than relying on the server host's own clock/timezone, which may not be
+    America/New_York."""
+    return datetime.now(ZoneInfo(RESTAURANT_TIMEZONE)).replace(tzinfo=None)
 SESSION_HOURS = int(os.getenv("SESSION_HOURS", "12"))
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "change-this-password")
@@ -2400,7 +2410,7 @@ def admin_resend_sms(reservation_id):
 def floorplan_data():
     require_admin()
     area = request.args.get("area", "Main Dining")
-    at_raw = request.args.get("at") or datetime.now().isoformat(timespec="minutes")
+    at_raw = request.args.get("at") or restaurant_now().isoformat(timespec="minutes")
     try:
         at = parse_dt(at_raw)
     except ValueError:
@@ -2470,7 +2480,7 @@ def floorplan_data():
 @app.get("/api/seat-candidates")
 def seat_candidates():
     require_admin()
-    at_raw = request.args.get("at") or datetime.now().isoformat(timespec="minutes")
+    at_raw = request.args.get("at") or restaurant_now().isoformat(timespec="minutes")
     try:
         at = parse_dt(at_raw)
     except ValueError:
@@ -2666,7 +2676,7 @@ def floorplan():
         "floorplan.html",
         pin=request.args.get("pin"),
         app_name=APP_NAME,
-        now=datetime.now().isoformat(timespec="minutes")
+        now=restaurant_now().isoformat(timespec="minutes")
     )
 
 
@@ -2883,7 +2893,7 @@ def sync_guest_profile(conn, reservation):
 @app.get("/timeline")
 def timeline():
     require_staff_login()
-    date_str = request.args.get("date") or datetime.now().strftime("%Y-%m-%d")
+    date_str = request.args.get("date") or restaurant_now().strftime("%Y-%m-%d")
     date_obj = datetime.strptime(date_str, "%Y-%m-%d")
     # Read live from business_hours, not the startup env vars -- previously
     # this page kept showing the old hour range after a Settings change
@@ -3067,7 +3077,7 @@ def api_servers():
     parties/covers are counted (defaults to today); the table<->server
     assignment itself isn't date-specific, only the load stats are."""
     require_admin()
-    date_str = request.args.get("date") or datetime.now().strftime("%Y-%m-%d")
+    date_str = request.args.get("date") or restaurant_now().strftime("%Y-%m-%d")
     conn = db()
     tables = conn.execute("""
         SELECT t.id, t.name, t.area, t.capacity, t.server_id, s.name AS server_name
@@ -3265,7 +3275,7 @@ def export_guests_csv():
 @app.get("/manager")
 def manager_overview():
     require_staff_login()
-    date_str = request.args.get("date") or datetime.now().strftime("%Y-%m-%d")
+    date_str = request.args.get("date") or restaurant_now().strftime("%Y-%m-%d")
     conn = db()
     stats = conn.execute("""
         SELECT COUNT(*) bookings,
@@ -3335,7 +3345,7 @@ def marketing_page():
 @app.get("/admin")
 def admin():
     require_staff_login()
-    date_str = request.args.get("date") or datetime.now().strftime("%Y-%m-%d")
+    date_str = request.args.get("date") or restaurant_now().strftime("%Y-%m-%d")
     status_filter = request.args.get("status", "all")
     search = request.args.get("search", "").strip()
     conn = db()
