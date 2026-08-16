@@ -81,8 +81,16 @@ small{color:var(--muted)}
 .dot.available,.floor-table.available,.status-pill.available{background:#2f7d55}.dot.confirmed,.floor-table.confirmed,.status-pill.confirmed{background:#b88724}.dot.seated,.floor-table.seated,.status-pill.seated{background:#3874a5}.dot.unavailable{background:#777}
 .floor-layout{display:grid;grid-template-columns:minmax(0,1fr) 310px;gap:16px}
 .floor-canvas{position:relative;min-height:690px;background-color:#fafafa;background-image:linear-gradient(#e5e5e5 1px,transparent 1px),linear-gradient(90deg,#e5e5e5 1px,transparent 1px);background-size:32px 32px;border:1px solid #d8d8d8;border-radius:14px;overflow:hidden}
-.floor-table{position:absolute;border:0;color:white;border-radius:8px;display:flex;flex-direction:column;align-items:center;justify-content:center;box-shadow:0 4px 9px rgba(0,0,0,.17);cursor:pointer;transition:.15s transform}
-.floor-table:hover{transform:scale(1.05);z-index:5}.floor-table.round{border-radius:50%}.floor-table strong{font-size:17px}.floor-table small{opacity:.8;font-size:11px}
+.floor-table{position:absolute;border:0;color:white;border-radius:8px;display:flex;flex-direction:column;align-items:center;justify-content:center;box-shadow:0 4px 9px rgba(0,0,0,.17);cursor:pointer;transition:.15s transform;transform:rotate(var(--table-rotation,0deg))}
+.floor-table:hover{transform:rotate(var(--table-rotation,0deg)) scale(1.05);z-index:5}.floor-table.round{border-radius:50%}.floor-table strong{font-size:17px}.floor-table small{opacity:.8;font-size:11px}
+.floor-canvas.edit-mode .floor-table{cursor:move;outline:2px dashed rgba(111,29,43,.4);outline-offset:2px}
+.floor-canvas.edit-mode .floor-table:active{cursor:grabbing}
+.prefix-input{display:flex;align-items:center;gap:6px}
+.prefix-input span{background:var(--cream);border:1px solid var(--line);border-radius:8px;padding:12px 14px;font-weight:800;color:var(--muted);flex-shrink:0}
+.prefix-input input{flex:1}
+.rotation-control{display:flex;align-items:center;gap:8px}
+.rotation-control button{width:36px;height:36px;border-radius:8px;border:1px solid var(--line);background:#fff;font-size:18px;cursor:pointer;flex-shrink:0}
+.rotation-control input{text-align:center}
 .floor-sidebar{background:white;border:1px solid var(--line);border-radius:14px;padding:20px;min-height:690px}
 .empty-details{color:var(--muted);padding:20px 0}.status-pill{display:inline-block;color:white;border-radius:999px;padding:5px 9px;font-size:12px;font-weight:700;text-transform:capitalize}
 .floor-sidebar dl{display:grid;grid-template-columns:80px 1fr;gap:9px;margin-top:20px}.floor-sidebar dt{color:var(--muted);font-size:12px}.floor-sidebar dd{margin:0;font-size:14px}
