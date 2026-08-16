@@ -97,6 +97,34 @@ function timeLabel(value) {
   return date.toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'});
 }
 
+// Renders small "chair" marks around the table instead of printing the
+// seat count as text -- capped at 8 so a large combined table doesn't turn
+// into a ring of chairs; the exact number is still in the aria-label/title
+// for accessibility and on hover. Round tables get chairs spaced evenly in
+// a circle; rectangles get them split between the top and bottom edges,
+// matching how an actual table with chairs reads at a glance.
+function chairsHtml(t) {
+  const count = Math.max(1, Math.min(8, Math.round(t.capacity)));
+  if (t.shape === 'round') {
+    let html = '';
+    for (let i = 0; i < count; i++) {
+      const angle = (360 / count) * i;
+      html += `<span class="table-chair round" style="transform:rotate(${angle}deg) translate(0,-165%) rotate(${-angle}deg)"></span>`;
+    }
+    return html;
+  }
+  const top = Math.ceil(count / 2);
+  const bottom = count - top;
+  let html = '';
+  for (let i = 0; i < top; i++) {
+    html += `<span class="table-chair top" style="left:${((i + 1) / (top + 1)) * 100}%"></span>`;
+  }
+  for (let i = 0; i < bottom; i++) {
+    html += `<span class="table-chair bottom" style="left:${((i + 1) / (bottom + 1)) * 100}%"></span>`;
+  }
+  return html;
+}
+
 // Not every existing table follows the prefix+number convention (a few
 // seeded tables are just plain numbers like "2", "3", "4") -- fall back to
 // showing the full name as the "number" for those rather than guessing.
@@ -125,9 +153,10 @@ async function loadFloor(keepDetails = false) {
     // :hover scale effect in style.css can compose with rotation instead
     // of an inline transform silently overriding it on hover.
     el.style.setProperty('--table-rotation', `${t.rotation || 0}deg`);
-    el.setAttribute('aria-label', `Table ${t.name}, ${t.display_status}`);
+    el.setAttribute('aria-label', `Table ${t.name}, ${t.capacity} seat${t.capacity === 1 ? '' : 's'}, ${t.display_status}`);
+    el.title = `${t.capacity} seat${t.capacity === 1 ? '' : 's'}`;
     const guest = t.reservation ? `<em>${esc(t.reservation.guest_name.split(' ')[0])}</em>` : '';
-    el.innerHTML = `<strong>${esc(t.name)}</strong><small>${t.capacity} seat${t.capacity === 1 ? '' : 's'}</small>${guest}`;
+    el.innerHTML = `${chairsHtml(t)}<strong>${esc(t.name)}</strong>${guest}`;
 
     if (editMode) {
       el.addEventListener('mousedown', (e) => startDrag(e, el, t));
