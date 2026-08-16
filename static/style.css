@@ -87,7 +87,7 @@ small{color:var(--muted)}
 .floor-canvas.edit-mode .floor-table{cursor:move;outline:2px dashed rgba(111,29,43,.4);outline-offset:2px}
 .floor-canvas.edit-mode .floor-table:active{cursor:grabbing}
 .table-chair{position:absolute;background:rgba(255,255,255,.92);pointer-events:none}
-.table-chair.top,.table-chair.bottom{width:30%;max-width:14px;height:6px;border-radius:3px;transform:translateX(-50%)}
+.table-chair.top,.table-chair.bottom{width:30%;max-width:14px;height:6px;border-radius:3px;transform:translateX(-50%) rotate(calc(-1 * var(--table-rotation,0deg)))}
 .table-chair.top{top:4px}
 .table-chair.bottom{bottom:4px}
 .table-chair.round{width:9px;height:9px;border-radius:50%;top:50%;left:50%;margin:-4.5px 0 0 -4.5px}
