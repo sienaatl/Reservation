@@ -78,10 +78,11 @@ small{color:var(--muted)}
 .floor-controls button,.secondary-button{border:0;background:var(--burgundy);color:#fff;border-radius:10px;padding:13px 16px;font-weight:700;text-decoration:none;white-space:nowrap}
 .legend{display:flex;gap:20px;background:white;border:1px solid var(--line);padding:12px 16px;border-radius:12px;margin-bottom:14px}
 .legend span{display:flex;align-items:center;gap:7px;font-size:13px}.dot{width:11px;height:11px;border-radius:50%;display:inline-block}
-.dot.available,.floor-table.available,.status-pill.available{background:#2f7d55}.dot.confirmed,.floor-table.confirmed,.status-pill.confirmed{background:#b88724}.dot.seated,.floor-table.seated,.status-pill.seated{background:#3874a5}.dot.unavailable{background:#777}
+.dot.available,.floor-table.available,.status-pill.available{background:#8a8580}.dot.confirmed,.floor-table.confirmed,.status-pill.confirmed{background:#b88724}.dot.seated,.floor-table.seated,.status-pill.seated{background:#3874a5}.dot.unavailable{background:#777}
 .floor-layout{display:grid;grid-template-columns:minmax(0,1fr) 310px;gap:16px}
 .floor-canvas{position:relative;min-height:690px;background-color:#fafafa;background-image:linear-gradient(#e5e5e5 1px,transparent 1px),linear-gradient(90deg,#e5e5e5 1px,transparent 1px);background-size:32px 32px;border:1px solid #d8d8d8;border-radius:14px;overflow:hidden}
-.floor-table{position:absolute;border:0;color:white;border-radius:8px;display:flex;flex-direction:column;align-items:center;justify-content:center;box-shadow:0 4px 9px rgba(0,0,0,.17);cursor:pointer;transition:.15s transform;transform:rotate(var(--table-rotation,0deg))}
+.floor-table{position:absolute;border:0;color:white;border-radius:8px;display:flex;flex-direction:column;align-items:center;justify-content:center;box-shadow:0 4px 9px rgba(0,0,0,.17);cursor:pointer;transition:.15s transform;transform:rotate(var(--table-rotation,0deg));min-height:110px}
+.floor-table.round{min-height:0}
 .floor-table:hover{transform:rotate(var(--table-rotation,0deg)) scale(1.05);z-index:5}.floor-table.round{border-radius:50%}.floor-table strong{font-size:17px}.floor-table small{opacity:.8;font-size:11px}
 .floor-canvas.edit-mode .floor-table{cursor:move;outline:2px dashed rgba(111,29,43,.4);outline-offset:2px}
 .floor-canvas.edit-mode .floor-table:active{cursor:grabbing}
