@@ -171,20 +171,11 @@ function currentChecklist() {
 }
 
 function renderChecklistEditor() {
-  const data = currentChecklist();
   const el = document.getElementById('checklist-editor');
   el.innerHTML = `
-    <div class="checklist-meta-grid">
-      <label>Title<input id="cl-title" value="${escAttr(data.title)}"></label>
-      <label>Subtitle<input id="cl-subtitle" value="${escAttr(data.subtitle)}"></label>
-      <label>Accent<input id="cl-accent" value="${escAttr(data.accent)}" placeholder="gold, wine, ..."></label>
-    </div>
     <div id="checklist-sections"></div>
     <button type="button" class="small-action-button" onclick="addChecklistSection()">+ Add Section</button>
   `;
-  document.getElementById('cl-title').addEventListener('input', function (e) { data.title = e.target.value; });
-  document.getElementById('cl-subtitle').addEventListener('input', function (e) { data.subtitle = e.target.value; });
-  document.getElementById('cl-accent').addEventListener('input', function (e) { data.accent = e.target.value; });
   renderChecklistSections();
 }
 
