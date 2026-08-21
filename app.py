@@ -78,7 +78,7 @@ INIT_DB_LOCK_KEY = 918273
 # lets a local dev build of the website call these endpoints too without
 # opening CORS up to any origin.
 ALLOWED_ORIGINS = {o.strip() for o in os.getenv("ALLOWED_ORIGIN", "").split(",") if o.strip()}
-CORS_API_PATHS = {"/api/book", "/api/availability", "/api/hours"}
+CORS_API_PATHS = {"/api/book", "/api/availability", "/api/hours", "/api/checklists/opening", "/api/checklists/closing"}
 
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "change-me-in-production")
@@ -337,6 +337,29 @@ def init_db():
         is_read INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS checklists (
+        id SERIAL PRIMARY KEY,
+        kind TEXT NOT NULL UNIQUE,
+        title TEXT NOT NULL,
+        subtitle TEXT NOT NULL DEFAULT '',
+        accent TEXT NOT NULL DEFAULT '',
+        updated_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS checklist_sections (
+        id SERIAL PRIMARY KEY,
+        checklist_id INTEGER NOT NULL REFERENCES checklists(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        sort_order INTEGER NOT NULL DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS checklist_items (
+        id SERIAL PRIMARY KEY,
+        section_id INTEGER NOT NULL REFERENCES checklist_sections(id) ON DELETE CASCADE,
+        text TEXT NOT NULL,
+        sort_order INTEGER NOT NULL DEFAULT 0
+    );
     """)
     conn.commit()
 
@@ -504,6 +527,26 @@ def init_db():
     if not conn.execute("SELECT 1 FROM staff_users LIMIT 1").fetchone():
         conn.execute("INSERT INTO staff_users(username,password_hash,role,created_at) VALUES (?,?,?,?)",
                      (ADMIN_USERNAME, generate_password_hash(ADMIN_PASSWORD), "manager", datetime.now().isoformat(timespec="seconds")))
+
+    # Seed the opening/closing checklists once from CHECKLIST_SEED_DATA -- a
+    # kind that's already in the table (whether from a prior seed or a
+    # manager's own edits since) is left alone.
+    for kind, data in CHECKLIST_SEED_DATA.items():
+        if conn.execute("SELECT 1 FROM checklists WHERE kind=?", (kind,)).fetchone():
+            continue
+        checklist_id = conn.execute(
+            "INSERT INTO checklists(kind, title, subtitle, accent, updated_at) VALUES (?,?,?,?,?) RETURNING id",
+            (kind, data["title"], data["subtitle"], data["accent"], datetime.now().isoformat(timespec="seconds"))
+        ).fetchone()["id"]
+        for order, section in enumerate(data["sections"]):
+            section_id = conn.execute(
+                "INSERT INTO checklist_sections(checklist_id, name, sort_order) VALUES (?,?,?) RETURNING id",
+                (checklist_id, section["name"], order)
+            ).fetchone()["id"]
+            conn.executemany(
+                "INSERT INTO checklist_items(section_id, text, sort_order) VALUES (?,?,?)",
+                [(section_id, item, i) for i, item in enumerate(section["items"])]
+            )
 
     conn.commit()
     conn.close()
@@ -1470,8 +1513,10 @@ def settings_page():
     users=conn.execute("SELECT id,username,role,active,last_login_at FROM staff_users ORDER BY username").fetchall()
     business_hours={r["day_of_week"]:r for r in conn.execute("SELECT * FROM business_hours ORDER BY day_of_week").fetchall()}
     conn.close()
+    checklists = {kind: get_checklist(kind) for kind in CHECKLIST_KINDS}
     return render_template("settings.html", settings=settings, closures=closures, users=users,
-                           business_hours=business_hours, weekday_labels=WEEKDAY_LABELS, app_name=APP_NAME)
+                           business_hours=business_hours, weekday_labels=WEEKDAY_LABELS, app_name=APP_NAME,
+                           checklists=checklists)
 
 
 @app.post("/settings/staff/<int:user_id>/password")
@@ -1706,6 +1751,209 @@ BOOKING_SOURCES = ("website", "ai_agent", "phone", "walk_in", "other")
 # two shapes with an equal or unequal width/height rather than new CSS.
 AREA_TABLE_PREFIX = {"Covered Patio": "P", "Main Dining": "D", "Bar": "B"}
 TABLE_SHAPES = ("rect", "round")
+
+# Opening/closing shift checklists. Admin-editable from Settings, served to
+# the standalone staff-checklists app (int.sienaatl.com) via the open
+# GET /api/checklists/<kind> endpoint below in this exact shape -- title,
+# subtitle, accent, and an ordered sections->items tree -- so that app no
+# longer needs its own static opening.json/closing.json files. Only used to
+# seed the checklists table once on a fresh database; after that the DB rows
+# are the source of truth and this constant is never read again.
+CHECKLIST_KINDS = ("opening", "closing")
+CHECKLIST_SEED_DATA = {
+    "opening": {
+        "title": "Opening Checklist",
+        "subtitle": "Front of House",
+        "accent": "gold",
+        "sections": [
+            {"name": "Restaurant Setup", "items": [
+                "Unlock front entrance", "Turn on dining room lights",
+                "Turn on patio lights (if applicable)", "Turn on music",
+                "Verify correct music channel/playlist is playing",
+                "Set music volume to appropriate level", "Set A/C to 73°F",
+                "Verify restaurant temperature is comfortable", "Turn on all table lamps",
+                "Verify all table lamps are set to warm light",
+                "Replace batteries or charge any non-functioning table lamps",
+                "Verify dining room lighting creates a warm and inviting atmosphere",
+                "Turn on server station food warmer",
+                "Verify server station food warmer is at proper temperature",
+            ]},
+            {"name": "Dining Room", "items": [
+                "Tables wiped and sanitized", "Chairs aligned", "Tables fully set",
+                "Menus clean and presentable", "Floors swept and clean",
+                "Verify no food crumbs under tables", "Verify no food crumbs under booths",
+                "Windows and front door clean", "Verify dining room is clean and guest ready",
+            ]},
+            {"name": "Host Stand", "items": [
+                "OpenTable reviewed", "Reservations reviewed", "All reservations assigned to tables",
+                "Table assignments reviewed with staff", "Waitlist system ready", "Phone charged and ready",
+            ]},
+            {"name": "Bar", "items": [
+                "Bar top cleaned and polished", "Bar stools aligned", "Ice bins filled",
+                "Garnishes prepared", "Club soda stocked", "Tonic water stocked", "Straws stocked",
+                "Cocktail straws stocked", "Black cocktail napkins stocked", "Glassware polished",
+                "Bar station fully stocked", "Verify bar refrigerator temperatures",
+                "Verify liquor display is organized",
+            ]},
+            {"name": "Service Stations", "items": [
+                "Silverware rolled", "Water station stocked", "To-go supplies stocked",
+                "POS system logged in", "Receipt paper checked", "Server stations stocked",
+            ]},
+            {"name": "Bathrooms", "items": [
+                "Bathrooms clean and stocked", "Toilets clean", "Sinks clean", "Mirrors clean",
+                "Toilet paper stocked", "Paper towels stocked", "Soap dispensers full", "Trash emptied",
+                "Bathroom floors clean and dry", "Bathroom smells clean and fresh",
+            ]},
+            {"name": "Staff Readiness", "items": [
+                "All sections assigned", "Server side work assigned", "Daily specials reviewed",
+                "86 list reviewed", "Menu changes reviewed", "Staff lineup completed", "FOH Manager sign-off",
+            ]},
+            {"name": "Siena Daily Verification", "items": [
+                "Verify buyout/event reservations", "Verify VIP reservations",
+                "Verify patio section assignments", "Verify OpenTable availability settings",
+                "Verify music matches Siena atmosphere", "Verify A/C set to 73°F",
+                "Verify all reservations are assigned to tables",
+            ]},
+        ],
+    },
+    "closing": {
+        "title": "Closing Checklist",
+        "subtitle": "Front of House",
+        "accent": "wine",
+        "sections": [
+            {"name": "Dining Room", "items": [
+                "Tables wiped and sanitized", "Chairs aligned", "Booths cleaned", "Floors swept",
+                "Floors mopped", "No food crumbs under tables", "No food crumbs under booths",
+                "Menus cleaned and organized", "Table lamps turned off", "Dining room reset for next service",
+            ]},
+            {"name": "Host Stand", "items": [
+                "OpenTable reviewed for next day", "Reservation notes updated", "Host stand organized",
+                "Phone plugged in and charging", "Menus stocked",
+            ]},
+            {"name": "Service Stations", "items": [
+                "Server stations cleaned", "Water stations cleaned and stocked",
+                "To-go supplies restocked", "Silverware rolled for next shift", "POS stations cleaned",
+                "Receipt paper stocked",
+            ]},
+            {"name": "Bar", "items": [
+                "Bar top cleaned and sanitized", "Bar stools aligned",
+                "Garnish containers emptied and cleaned", "Ice bins emptied", "Glassware washed and polished",
+                "Liquor bottles organized", "Beer and wine stock checked", "Bar station reset for next day",
+                "Trash removed",
+            ]},
+            {"name": "Bathrooms", "items": [
+                "Toilets cleaned", "Sinks cleaned", "Mirrors cleaned", "Toilet paper restocked",
+                "Paper towels restocked", "Soap dispensers filled", "Trash emptied", "Floors cleaned",
+                "Bathrooms checked by manager",
+            ]},
+            {"name": "Staff Checkout", "items": [
+                "All server side work completed", "All bartender side work completed",
+                "Tips entered correctly", "Cashouts completed", "Credit card receipts signed and organized",
+                "Server checkout reviewed with manager", "Bartender checkout reviewed with manager",
+                "Any comps, voids, or discounts approved by manager",
+                "All employees checked out with manager before leaving",
+            ]},
+            {"name": "Manager Closing Verification", "items": [
+                "Final dining room walk-through completed", "Final bar walk-through completed",
+                "Final bathroom inspection completed", "POS sales report reviewed", "Labor report reviewed",
+                "Patio back doors locked", "Kitchen exit door locked", "Doors locked", "Alarm activated",
+                "Manager sign-off",
+            ]},
+        ],
+    },
+}
+
+
+def get_checklist(kind: str):
+    """Nested {title, subtitle, accent, sections:[{name, items:[...]}]} for
+    one checklist kind, or None if it hasn't been seeded/created yet."""
+    conn = db()
+    checklist = conn.execute("SELECT * FROM checklists WHERE kind=?", (kind,)).fetchone()
+    if not checklist:
+        conn.close()
+        return None
+    sections = conn.execute(
+        "SELECT * FROM checklist_sections WHERE checklist_id=? ORDER BY sort_order, id",
+        (checklist["id"],)
+    ).fetchall()
+    result_sections = []
+    for section in sections:
+        items = conn.execute(
+            "SELECT text FROM checklist_items WHERE section_id=? ORDER BY sort_order, id",
+            (section["id"],)
+        ).fetchall()
+        result_sections.append({"name": section["name"], "items": [i["text"] for i in items]})
+    conn.close()
+    return {
+        "title": checklist["title"], "subtitle": checklist["subtitle"],
+        "accent": checklist["accent"], "sections": result_sections,
+    }
+
+
+def save_checklist(kind: str, title: str, subtitle: str, accent: str, sections: list):
+    """Replaces the entire section/item tree for one checklist kind in a
+    single transaction -- simpler and safer than diffing against the
+    previous tree, and the whole document is small enough that a full
+    replace on every save is cheap."""
+    conn = db()
+    conn.execute("""
+        INSERT INTO checklists(kind, title, subtitle, accent, updated_at) VALUES (?,?,?,?,?)
+        ON CONFLICT(kind) DO UPDATE SET
+          title=excluded.title, subtitle=excluded.subtitle, accent=excluded.accent, updated_at=excluded.updated_at
+    """, (kind, title, subtitle, accent, datetime.now().isoformat(timespec="seconds")))
+    checklist_id = conn.execute("SELECT id FROM checklists WHERE kind=?", (kind,)).fetchone()["id"]
+    conn.execute("DELETE FROM checklist_sections WHERE checklist_id=?", (checklist_id,))
+    for order, section in enumerate(sections):
+        section_id = conn.execute(
+            "INSERT INTO checklist_sections(checklist_id, name, sort_order) VALUES (?,?,?) RETURNING id",
+            (checklist_id, section["name"], order)
+        ).fetchone()["id"]
+        conn.executemany(
+            "INSERT INTO checklist_items(section_id, text, sort_order) VALUES (?,?,?)",
+            [(section_id, item, i) for i, item in enumerate(section["items"])]
+        )
+    conn.commit()
+    conn.close()
+
+
+@app.get("/api/checklists/<kind>")
+def api_get_checklist(kind):
+    """Open, unauthenticated on purpose -- this is a checklist template, not
+    guest/business data, and int.sienaatl.com's checklist pages need to be
+    able to fetch it directly from the browser."""
+    if kind not in CHECKLIST_KINDS:
+        return jsonify({"error": "Unknown checklist."}), 404
+    checklist = get_checklist(kind)
+    if not checklist:
+        return jsonify({"error": "Checklist not configured."}), 404
+    return jsonify(checklist)
+
+
+@app.post("/api/checklists/<kind>")
+def api_save_checklist(kind):
+    require_admin()
+    if kind not in CHECKLIST_KINDS:
+        return jsonify({"error": "Unknown checklist."}), 404
+    data = request.get_json(silent=True) or {}
+    title = (data.get("title") or "").strip()
+    subtitle = (data.get("subtitle") or "").strip()
+    accent = (data.get("accent") or "").strip()
+    raw_sections = data.get("sections")
+    if not title or not isinstance(raw_sections, list) or not raw_sections:
+        return jsonify({"error": "Title and at least one section are required."}), 400
+
+    sections = []
+    for raw in raw_sections:
+        name = (raw.get("name") or "").strip() if isinstance(raw, dict) else ""
+        items = [str(i).strip() for i in (raw.get("items") or [])] if isinstance(raw, dict) else []
+        items = [i for i in items if i]
+        if not name or not items:
+            return jsonify({"error": "Every section needs a name and at least one item."}), 400
+        sections.append({"name": name, "items": items})
+
+    save_checklist(kind, title, subtitle, accent, sections)
+    audit("update_checklist", "checklist", kind)
+    return jsonify({"ok": True})
 
 
 def _create_reservation(guest_name, email, phone, party_size, reservation_at_raw,
