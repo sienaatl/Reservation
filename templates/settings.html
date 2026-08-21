@@ -56,6 +56,22 @@
       </form>
     </div>{% endfor %}</section>
   </div>
+
+  <section class="panel checklist-panel">
+    <div class="checklist-panel-head">
+      <h2>Checklists</h2>
+      <div class="checklist-tabs">
+        <button type="button" class="checklist-tab active" data-kind="opening" onclick="switchChecklistTab('opening')">Opening</button>
+        <button type="button" class="checklist-tab" data-kind="closing" onclick="switchChecklistTab('closing')">Closing</button>
+      </div>
+    </div>
+    <p class="muted-copy">Edit the opening and closing checklists staff complete at the start/end of each shift. Saving here updates what int.sienaatl.com serves immediately.</p>
+    <div id="checklist-editor"></div>
+    <div id="checklist-save-row">
+      <button type="button" class="seat-action" id="checklist-save-btn" onclick="saveChecklist()">Save Checklist</button>
+      <span id="checklist-save-status" class="muted-copy"></span>
+    </div>
+  </section>
 </section>
 
 <script>
@@ -127,5 +143,129 @@ function toggleHoursDayClosed(checkbox) {
     form.submit();
   });
 })();
+
+// Checklist editor: works off a deep-cloned copy of the server-rendered
+// data so unsaved edits (including switching between the Opening/Closing
+// tabs) never touch the original until Save Checklist actually posts.
+const CHECKLISTS = {{ checklists | tojson }};
+const EMPTY_CHECKLIST = { title: '', subtitle: '', accent: '', sections: [] };
+let checklistState = JSON.parse(JSON.stringify(CHECKLISTS));
+let activeChecklistKind = 'opening';
+
+function escAttr(value) {
+  return String(value ?? '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+}
+
+function switchChecklistTab(kind) {
+  activeChecklistKind = kind;
+  document.querySelectorAll('.checklist-tab').forEach(function (btn) {
+    btn.classList.toggle('active', btn.dataset.kind === kind);
+  });
+  document.getElementById('checklist-save-status').textContent = '';
+  renderChecklistEditor();
+}
+
+function currentChecklist() {
+  if (!checklistState[activeChecklistKind]) checklistState[activeChecklistKind] = JSON.parse(JSON.stringify(EMPTY_CHECKLIST));
+  return checklistState[activeChecklistKind];
+}
+
+function renderChecklistEditor() {
+  const data = currentChecklist();
+  const el = document.getElementById('checklist-editor');
+  el.innerHTML = `
+    <div class="checklist-meta-grid">
+      <label>Title<input id="cl-title" value="${escAttr(data.title)}"></label>
+      <label>Subtitle<input id="cl-subtitle" value="${escAttr(data.subtitle)}"></label>
+      <label>Accent<input id="cl-accent" value="${escAttr(data.accent)}" placeholder="gold, wine, ..."></label>
+    </div>
+    <div id="checklist-sections"></div>
+    <button type="button" class="small-action-button" onclick="addChecklistSection()">+ Add Section</button>
+  `;
+  document.getElementById('cl-title').addEventListener('input', function (e) { data.title = e.target.value; });
+  document.getElementById('cl-subtitle').addEventListener('input', function (e) { data.subtitle = e.target.value; });
+  document.getElementById('cl-accent').addEventListener('input', function (e) { data.accent = e.target.value; });
+  renderChecklistSections();
+}
+
+function renderChecklistSections() {
+  const data = currentChecklist();
+  const wrap = document.getElementById('checklist-sections');
+  if (!data.sections.length) {
+    wrap.innerHTML = '<p class="muted-copy">No sections yet -- add one below.</p>';
+    return;
+  }
+  wrap.innerHTML = data.sections.map(function (section, sIdx) {
+    const items = section.items.map(function (item, iIdx) {
+      return `
+        <div class="checklist-item-row">
+          <input value="${escAttr(item)}" onchange="updateChecklistItem(${sIdx}, ${iIdx}, this.value)">
+          <button type="button" class="icon-action-button" title="Remove item" onclick="removeChecklistItem(${sIdx}, ${iIdx})">✕</button>
+        </div>`;
+    }).join('');
+    return `
+      <div class="checklist-section">
+        <div class="checklist-section-head">
+          <input class="checklist-section-name" value="${escAttr(section.name)}" onchange="updateSectionName(${sIdx}, this.value)">
+          <button type="button" class="icon-action-button" title="Remove section" onclick="removeChecklistSection(${sIdx})">✕</button>
+        </div>
+        <div class="checklist-items">${items}</div>
+        <button type="button" class="small-action-button" onclick="addChecklistItem(${sIdx})">+ Add Item</button>
+      </div>`;
+  }).join('');
+}
+
+function updateSectionName(sIdx, value) { currentChecklist().sections[sIdx].name = value; }
+function updateChecklistItem(sIdx, iIdx, value) { currentChecklist().sections[sIdx].items[iIdx] = value; }
+
+function addChecklistSection() {
+  currentChecklist().sections.push({ name: 'New Section', items: ['New item'] });
+  renderChecklistSections();
+}
+function removeChecklistSection(sIdx) {
+  if (!confirm('Remove this section and all its items?')) return;
+  currentChecklist().sections.splice(sIdx, 1);
+  renderChecklistSections();
+}
+function addChecklistItem(sIdx) {
+  currentChecklist().sections[sIdx].items.push('New item');
+  renderChecklistSections();
+}
+function removeChecklistItem(sIdx, iIdx) {
+  currentChecklist().sections[sIdx].items.splice(iIdx, 1);
+  renderChecklistSections();
+}
+
+async function saveChecklist() {
+  const statusEl = document.getElementById('checklist-save-status');
+  const saveBtn = document.getElementById('checklist-save-btn');
+  const data = currentChecklist();
+  statusEl.style.color = '';
+  statusEl.textContent = 'Saving...';
+  saveBtn.disabled = true;
+  try {
+    const response = await fetch(`/api/checklists/${activeChecklistKind}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    const result = await response.json();
+    if (!response.ok || !result.ok) {
+      statusEl.textContent = result.error || 'Unable to save checklist.';
+      statusEl.style.color = '#a12a24';
+      return;
+    }
+    statusEl.textContent = 'Saved.';
+    statusEl.style.color = '#246331';
+    setTimeout(function () { statusEl.textContent = ''; }, 2500);
+  } catch (err) {
+    statusEl.textContent = 'Unable to save checklist.';
+    statusEl.style.color = '#a12a24';
+  } finally {
+    saveBtn.disabled = false;
+  }
+}
+
+renderChecklistEditor();
 </script>
 {% endblock %}
