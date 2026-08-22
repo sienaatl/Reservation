@@ -46,8 +46,7 @@
               <option value="{{ value }}" {% if status_filter==value %}selected{% endif %}>{{ label }}</option>
               {% endfor %}
             </select>
-            <input name="search" value="{{ search }}" placeholder="Search guest, phone or confirmation">
-            <button type="submit">Filter</button>
+            <input name="search" value="{{ search }}" placeholder="Search guest, phone or confirmation" onchange="this.form.submit()">
             <a class="outline-button" href="{{ url_for('export_reservation_book', date=date_str, status=status_filter, search=search, pin=pin) }}">Export CSV</a>
           </form>
         </div>
