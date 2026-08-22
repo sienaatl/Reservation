@@ -3668,6 +3668,48 @@ def admin():
     )
 
 
+@app.get("/admin/export-book.csv")
+@role_required("manager", "host")
+def export_reservation_book():
+    """CSV export of the Reservation Book exactly as currently filtered on
+    the dashboard (same date/status/search params as admin()) -- unlike
+    /admin/export.csv (a full date-range record dump with every field),
+    this is the small guest-list handoff format: date, time, party size,
+    name, and contact info for whatever's on screen when Export is clicked."""
+    date_str = request.args.get("date") or restaurant_now().strftime("%Y-%m-%d")
+    status_filter = request.args.get("status", "all")
+    search = request.args.get("search", "").strip()
+
+    query = """
+        SELECT reservation_at, party_size, guest_name, email, phone
+        FROM reservations
+        WHERE reservation_at::date = ?::date
+    """
+    params = [date_str]
+    if status_filter != "all":
+        query += " AND status = ?"
+        params.append(status_filter)
+    if search:
+        query += " AND (lower(guest_name) LIKE ? OR lower(phone) LIKE ? OR lower(email) LIKE ? OR lower(id) LIKE ?)"
+        needle = f"%{search.lower()}%"
+        params.extend([needle, needle, needle, needle])
+    query += " ORDER BY reservation_at::timestamp"
+
+    conn = db()
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+
+    out = io.StringIO()
+    writer = csv.writer(out)
+    writer.writerow(["Date", "Time", "Party Size", "Guest Name", "Email", "Phone"])
+    for r in rows:
+        dt = parse_dt(r["reservation_at"])
+        writer.writerow([dt.strftime("%Y-%m-%d"), dt.strftime("%-I:%M %p"), r["party_size"], r["guest_name"], r["email"], r["phone"]])
+    audit("export_reservation_book", "reservation", "", {"date": date_str, "status": status_filter, "search": search, "count": len(rows)})
+    return Response(out.getvalue(), mimetype="text/csv",
+                     headers={"Content-Disposition": f"attachment; filename=siena-reservation-book-{date_str}.csv"})
+
+
 @app.post("/admin/status/<reservation_id>")
 def update_status(reservation_id):
     require_admin()
