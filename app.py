@@ -3701,10 +3701,11 @@ def export_reservation_book():
 
     out = io.StringIO()
     writer = csv.writer(out)
-    writer.writerow(["Date", "Time", "Party Size", "Guest Name", "Email", "Phone"])
+    writer.writerow(["Date", "Time", "Party Size", "First Name", "Last Name", "Phone", "Email"])
     for r in rows:
         dt = parse_dt(r["reservation_at"])
-        writer.writerow([dt.strftime("%Y-%m-%d"), dt.strftime("%-I:%M %p"), r["party_size"], r["guest_name"], r["email"], r["phone"]])
+        first_name, _, last_name = r["guest_name"].strip().partition(" ")
+        writer.writerow([dt.strftime("%Y-%m-%d"), dt.strftime("%-I:%M %p"), r["party_size"], first_name, last_name, r["phone"], r["email"]])
     audit("export_reservation_book", "reservation", "", {"date": date_str, "status": status_filter, "search": search, "count": len(rows)})
     return Response(out.getvalue(), mimetype="text/csv",
                      headers={"Content-Disposition": f"attachment; filename=siena-reservation-book-{date_str}.csv"})
