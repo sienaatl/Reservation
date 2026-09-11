@@ -48,6 +48,7 @@ SMS_REMINDER_24H = os.getenv("SMS_REMINDER_24H", "true").lower() in {"1", "true"
 SMS_REMINDER_2H = os.getenv("SMS_REMINDER_2H", "true").lower() in {"1", "true", "yes", "on"}
 CRON_SECRET = os.getenv("CRON_SECRET", "")
 REVIEW_URL = os.getenv("REVIEW_URL", "https://g.page/r/CYL3k1UEWlCKEBM/review")
+ORDER_ONLINE_URL = os.getenv("ORDER_ONLINE_URL", "https://order.toasttab.com/online/sienaatl")
 BIRTHDAY_SMS_ENABLED = os.getenv("BIRTHDAY_SMS_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
 REVIEW_SMS_ENABLED = os.getenv("REVIEW_SMS_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
 RUNNING_LATE_MINUTES = int(os.getenv("RUNNING_LATE_MINUTES", "15"))
@@ -2419,6 +2420,28 @@ Siena Restaurant and Bar
         "email_sent": email_sent,
         "sms_sent": sms_sent,
     })
+
+
+@app.post("/api/send-order-link")
+def api_send_order_link():
+    """Texts the online-ordering link to a caller on request. Built for
+    external callers (e.g. a phone-call AI agent via n8n) -- doesn't touch
+    the reservations table at all. Only phone is required. Message body is
+    fixed (not caller-supplied) so this can't be turned into an open SMS
+    relay."""
+    require_admin()
+    data = request.get_json(silent=True) or request.form or request.args
+    phone = (data.get("phone") or "").strip()
+
+    if not phone:
+        return jsonify({"ok": False, "error": "phone is required."}), 400
+
+    sms_body = f"Siena Restaurant: You can order online using this link {ORDER_ONLINE_URL}"
+    sms_sent = send_sms(phone, sms_body)
+    if not sms_sent:
+        return jsonify({"ok": False, "error": "Could not send SMS. Check the phone number and Twilio settings."}), 502
+
+    return jsonify({"ok": True, "sms_sent": True})
 
 
 @app.post("/api/support-requests")
