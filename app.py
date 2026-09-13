@@ -49,6 +49,7 @@ SMS_REMINDER_2H = os.getenv("SMS_REMINDER_2H", "true").lower() in {"1", "true", 
 CRON_SECRET = os.getenv("CRON_SECRET", "")
 REVIEW_URL = os.getenv("REVIEW_URL", "https://g.page/r/CYL3k1UEWlCKEBM/review")
 ORDER_ONLINE_URL = os.getenv("ORDER_ONLINE_URL", "https://order.toasttab.com/online/sienaatl")
+RESERVATION_UPDATE_NOTIFICATION_EMAIL = os.getenv("RESERVATION_UPDATE_NOTIFICATION_EMAIL", "info@sienaatl.com")
 BIRTHDAY_SMS_ENABLED = os.getenv("BIRTHDAY_SMS_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
 REVIEW_SMS_ENABLED = os.getenv("REVIEW_SMS_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
 RUNNING_LATE_MINUTES = int(os.getenv("RUNNING_LATE_MINUTES", "15"))
@@ -2494,6 +2495,74 @@ def api_create_support_request():
         "ok": True,
         "ticket": {"id": ticket_id, "status": "open", "priority": priority, "category": category, "created_at": now}
     }), 201
+
+
+@app.post("/api/reservation-update-request")
+def api_reservation_update_request():
+    """Emails info@sienaatl.com when a caller wants to change a reservation
+    this system doesn't hold (e.g. booked directly on OpenTable), so staff
+    can go make the change by hand. Built for external callers (e.g. a
+    phone-call AI agent via n8n) -- doesn't touch the reservations table."""
+    require_admin()
+    data = request.get_json(silent=True) or request.form or request.args
+
+    guest_name = (data.get("guest_name") or "").strip()
+    phone = (data.get("phone") or "").strip()
+    query = (data.get("query") or "").strip()
+    reservation_details = (data.get("reservation_details") or "").strip()
+    booking_source = (data.get("booking_source") or "unsure").strip().lower()
+
+    if not guest_name or not phone or not query:
+        return jsonify({"ok": False, "error": "guest_name, phone, and query are required."}), 400
+    if booking_source not in ("opentable", "unsure"):
+        booking_source = "unsure"
+
+    source_text = "OpenTable" if booking_source == "opentable" else "an unconfirmed platform"
+    subject = (f"New Guest Request: Update to OpenTable Reservation for {guest_name}"
+               if booking_source == "opentable" else
+               f"New Guest Request: Reservation Update for {guest_name}")
+
+    text_body = f"""A caller asked to change a reservation booked through {source_text}.
+
+Guest: {guest_name}
+Phone: {phone}
+Booking source: {booking_source}
+
+Request:
+{query}
+
+Reservation on file (as given by the caller/lookup):
+{reservation_details or '(none provided)'}
+
+Please follow up with the guest directly to make this change.
+"""
+    html_body = f"""<!doctype html>
+<html>
+<body style="margin:0;background:#f5f0e8;font-family:Arial,sans-serif;color:#211b18">
+  <div style="max-width:620px;margin:32px auto;background:#ffffff;border-radius:14px;overflow:hidden;border:1px solid #ddd2c4">
+    <div style="background:#080808;padding:26px;text-align:center">
+      <div style="color:#fff;font-family:Georgia,serif;font-size:36px;font-style:italic">Siena</div>
+      <div style="color:#c9a25d;letter-spacing:4px;font-size:10px">RESERVATION UPDATE REQUEST</div>
+    </div>
+    <div style="padding:30px">
+      <h1 style="font-family:Georgia,serif;font-size:26px;margin:0 0 16px">Guest wants a reservation change</h1>
+      <p style="color:#6f655e">A caller asked to change a reservation booked through <strong>{source_text}</strong>. This system doesn't hold that booking, so please follow up with the guest directly.</p>
+      <div style="background:#faf7f1;border:1px solid #e7ded2;border-radius:10px;padding:18px;line-height:1.9">
+        <strong>Guest:</strong> {guest_name}<br>
+        <strong>Phone:</strong> {phone}<br>
+        <strong>Booking source:</strong> {booking_source}<br>
+        <strong>Request:</strong> {query}<br>
+        <strong>Reservation on file:</strong> {reservation_details or '&mdash;'}
+      </div>
+    </div>
+  </div>
+</body>
+</html>"""
+    email_sent = send_email(RESERVATION_UPDATE_NOTIFICATION_EMAIL, subject, html_body, text_body)
+    if not email_sent:
+        return jsonify({"ok": False, "error": "Could not send email. Check SMTP settings."}), 502
+
+    return jsonify({"ok": True, "email_sent": True})
 
 
 @app.get("/confirmation/<reservation_id>")
