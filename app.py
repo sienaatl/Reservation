@@ -18,6 +18,7 @@ from twilio.rest import Client
 from twilio.base.exceptions import TwilioRestException
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from login_security import safe_login_destination
 
 APP_NAME = os.getenv("APP_NAME", "Siena Reservations")
 DATABASE_URL = os.getenv("DATABASE_URL", "")
@@ -99,6 +100,17 @@ def add_cors_headers(response):
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
         response.headers["Access-Control-Allow-Headers"] = "Content-Type"
         response.headers["Vary"] = "Origin"
+    return response
+
+
+@app.after_request
+def protect_staff_login(response):
+    if request.endpoint == "staff_login":
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Robots-Tag"] = "noindex, nofollow"
+        response.headers["Referrer-Policy"] = "same-origin"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Content-Security-Policy"] = "form-action 'self'; frame-ancestors 'none'; base-uri 'self'"
     return response
 
 
@@ -1268,7 +1280,7 @@ def role_required(*roles):
         def wrapped(*args, **kwargs):
             staff = current_staff()
             if not staff:
-                return redirect(url_for("staff_login", next=request.url))
+                return redirect(url_for("staff_login", next=request.full_path.rstrip("?")))
             if roles and staff["role"] not in roles:
                 abort(403)
             return fn(*args, **kwargs)
@@ -1408,7 +1420,7 @@ def require_staff_login():
 def handle_unauthorized(error):
     if request.path.startswith("/api/"):
         return jsonify({"error": "Authentication required."}), 401
-    return redirect(url_for("staff_login", next=request.url))
+    return redirect(url_for("staff_login", next=request.full_path.rstrip("?")))
 
 
 @app.route("/staff/login", methods=["GET", "POST"])
@@ -1428,7 +1440,8 @@ def staff_login():
             session.clear(); session.permanent = True
             session.update(staff_user_id=user["id"], staff_username=user["username"], staff_role=user["role"])
             conn.execute("UPDATE staff_users SET last_login_at=? WHERE id=?", (datetime.now().isoformat(timespec="seconds"), user["id"]))
-            conn.commit(); conn.close(); audit("login", "staff_user", user["id"]); return redirect(request.args.get("next") or url_for("admin"))
+            conn.commit(); conn.close(); audit("login", "staff_user", user["id"])
+            return redirect(safe_login_destination(request.args.get("next"), PUBLIC_BASE_URL))
         conn.close()
         record_login_attempt(client_ip, username, False)
         flash("Invalid username or password.", "error")
