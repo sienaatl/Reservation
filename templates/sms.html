@@ -1,0 +1,181 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="admin-shell">
+  <div class="admin-heading">
+    <div><p class="eyebrow">Twilio</p><h1>SMS</h1></div>
+  </div>
+
+  <div class="sms-layout">
+    <div class="panel sms-conversation-list" id="sms-conversation-list">
+      <div class="crm-loading">Loading conversations…</div>
+    </div>
+
+    <div class="panel sms-chat-panel" id="sms-chat-panel">
+      <div class="sms-empty-panel">Select a conversation to view the thread.</div>
+    </div>
+  </div>
+</section>
+
+<script>
+let conversations = [];
+let activePhone = null;
+let pollTimer = null;
+
+function esc(value) {
+  return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function timeAgo(iso) {
+  if (!iso) return '';
+  const then = new Date(iso.replace(' ', 'T'));
+  const diffMin = Math.round((Date.now() - then.getTime()) / 60000);
+  if (diffMin < 1) return 'now';
+  if (diffMin < 60) return `${diffMin}m`;
+  if (diffMin < 1440) return `${Math.round(diffMin / 60)}h`;
+  return then.toLocaleDateString();
+}
+
+function conversationRowHtml(c) {
+  const label = c.guest_name || c.phone;
+  return `
+    <div class="sms-conv-row${c.phone === activePhone ? ' active' : ''}" data-phone="${esc(c.phone)}">
+      <div class="sms-conv-main">
+        <div class="sms-conv-name">
+          <span>${esc(label)}</span>
+          <span class="sms-conv-time">${esc(timeAgo(c.last_at))}</span>
+        </div>
+        <div class="sms-conv-preview${c.last_direction === 'outbound' ? ' outbound' : ''}">${esc(c.last_message)}</div>
+      </div>
+      ${c.unread_count > 0 ? `<span class="sms-conv-unread">${c.unread_count}</span>` : ''}
+    </div>`;
+}
+
+async function loadConversations() {
+  const response = await fetch('/api/sms/conversations');
+  if (!response.ok) return;
+  const data = await response.json();
+  conversations = data.items || [];
+  const list = document.getElementById('sms-conversation-list');
+  if (!conversations.length) {
+    list.innerHTML = '<div class="empty-state">No text messages yet.</div>';
+  } else {
+    list.innerHTML = conversations.map(conversationRowHtml).join('');
+  }
+  const totalUnread = conversations.reduce((sum, c) => sum + (c.unread_count || 0), 0);
+  updateNavBadge(totalUnread);
+}
+
+// Mirrors support.html's updateNavBadge() -- keeps the "SMS" nav link's
+// unread-count badge live without a page reload.
+function updateNavBadge(count) {
+  const link = document.getElementById('nav-sms-link');
+  if (!link) return;
+  let badge = document.getElementById('nav-sms-badge');
+  if (count > 0) {
+    if (!badge) {
+      link.insertAdjacentHTML('beforeend', ` <span class="nav-badge" id="nav-sms-badge"></span>`);
+      badge = document.getElementById('nav-sms-badge');
+    }
+    badge.textContent = count;
+  } else if (badge) {
+    badge.remove();
+  }
+}
+
+function bubbleHtml(m) {
+  const label = m.direction === 'inbound' ? 'them' : 'you';
+  return `
+    <div class="sms-bubble ${esc(m.direction)}">
+      ${esc(m.body)}
+      <time>${esc(label)} · ${esc(timeAgo(m.created_at))}</time>
+    </div>`;
+}
+
+function chatPanelHtml(phone) {
+  const c = conversations.find(x => x.phone === phone);
+  const label = (c && c.guest_name) || phone;
+  return `
+    <div class="sms-chat-head">
+      <h2>${esc(label)}</h2>
+      <small>${esc(phone)}</small>
+    </div>
+    <div class="sms-messages" id="sms-messages"></div>
+    <form class="sms-composer" id="sms-composer">
+      <textarea id="sms-composer-input" placeholder="Type a message…" rows="1" required></textarea>
+      <button type="submit" class="primary-button">Send</button>
+    </form>`;
+}
+
+async function openConversation(phone) {
+  activePhone = phone;
+  document.querySelectorAll('.sms-conv-row').forEach(row => {
+    row.classList.toggle('active', row.dataset.phone === phone);
+  });
+
+  const panel = document.getElementById('sms-chat-panel');
+  panel.innerHTML = chatPanelHtml(phone);
+  document.getElementById('sms-composer').addEventListener('submit', sendMessage);
+  document.getElementById('sms-composer-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      document.getElementById('sms-composer').requestSubmit();
+    }
+  });
+
+  await refreshMessages(phone, true);
+  loadConversations(); // clears this conversation's unread badge/count
+}
+
+async function refreshMessages(phone, scrollToBottom) {
+  if (phone !== activePhone) return;
+  const response = await fetch(`/api/sms/conversations/${encodeURIComponent(phone)}/messages`);
+  if (!response.ok || phone !== activePhone) return;
+  const data = await response.json();
+  const messagesEl = document.getElementById('sms-messages');
+  if (!messagesEl) return;
+  const wasAtBottom = messagesEl.scrollTop + messagesEl.clientHeight >= messagesEl.scrollHeight - 40;
+  messagesEl.innerHTML = (data.items || []).map(bubbleHtml).join('') || '<div class="empty-state">No messages yet.</div>';
+  if (scrollToBottom || wasAtBottom) {
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+}
+
+async function sendMessage(e) {
+  e.preventDefault();
+  if (!activePhone) return;
+  const input = document.getElementById('sms-composer-input');
+  const body = input.value.trim();
+  if (!body) return;
+  input.disabled = true;
+  const response = await fetch(`/api/sms/conversations/${encodeURIComponent(activePhone)}/send`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ body }),
+  });
+  const data = await response.json();
+  input.disabled = false;
+  if (!response.ok || !data.ok) {
+    alert((data && data.error) || 'Unable to send message.');
+    return;
+  }
+  input.value = '';
+  await refreshMessages(activePhone, true);
+  loadConversations();
+}
+
+document.getElementById('sms-conversation-list').addEventListener('click', (e) => {
+  const row = e.target.closest('.sms-conv-row');
+  if (row) openConversation(row.dataset.phone);
+});
+
+// Polling stands in for a push channel -- Twilio delivers inbound texts to
+// the /twilio/incoming webhook server-side regardless of whether this tab
+// is open; this just keeps the open tab's list/thread current.
+loadConversations();
+pollTimer = setInterval(() => {
+  loadConversations();
+  if (activePhone) refreshMessages(activePhone, false);
+}, 5000);
+window.addEventListener('beforeunload', () => clearInterval(pollTimer));
+</script>
+{% endblock %}
