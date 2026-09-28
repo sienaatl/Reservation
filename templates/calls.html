@@ -3,13 +3,14 @@
 <section class="admin-shell">
   <div class="admin-heading">
     <div><p class="eyebrow">Retell AI</p><h1>Call History</h1></div>
+    <button type="button" id="sync-button" class="outline-button">Sync</button>
   </div>
 
   <div class="stats-grid">
     <article><span>Total Calls</span><strong id="stat-total">0</strong></article>
-    <article><span>Successful</span><strong id="stat-successful">0</strong></article>
-    <article><span>Unsuccessful</span><strong id="stat-unsuccessful">0</strong></article>
     <article><span>Success Rate</span><strong id="stat-rate">—</strong></article>
+    <article><span>Total Cost</span><strong id="stat-cost">$0.00</strong></article>
+    <article><span>Total Minutes</span><strong id="stat-minutes">0</strong></article>
   </div>
 
   <div class="panel crm-toolbar">
@@ -166,10 +167,10 @@ async function loadCalls() {
 
   const stats = data.stats || {};
   document.getElementById('stat-total').textContent = stats.total || 0;
-  document.getElementById('stat-successful').textContent = stats.successful || 0;
-  document.getElementById('stat-unsuccessful').textContent = stats.unsuccessful || 0;
   document.getElementById('stat-rate').textContent = stats.total
     ? `${Math.round((stats.successful / stats.total) * 100)}%` : '—';
+  document.getElementById('stat-cost').textContent = fmtCost(stats.total_cost_cents || 0);
+  document.getElementById('stat-minutes').textContent = Math.round((stats.total_duration_ms || 0) / 60000).toLocaleString();
 
   const total = stats.total || 0;
   const start = total ? (state.page - 1) * state.pageSize + 1 : 0;
@@ -191,6 +192,27 @@ document.getElementById('call-search').addEventListener('input', (e) => {
 });
 document.getElementById('crm-prev').addEventListener('click', () => { state.page = Math.max(1, state.page - 1); loadCalls(); });
 document.getElementById('crm-next').addEventListener('click', () => { state.page += 1; loadCalls(); });
+
+document.getElementById('sync-button').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  btn.textContent = 'Syncing…';
+  try {
+    const response = await fetch('/calls/sync', { method: 'POST' });
+    const data = await response.json();
+    if (!response.ok || !data.ok) {
+      alert((data && data.error) || 'Unable to sync calls.');
+    } else {
+      state.page = 1;
+      await loadCalls();
+    }
+  } catch (err) {
+    alert('Unable to sync calls.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Sync';
+  }
+});
 
 document.getElementById('call-tbody').addEventListener('click', (e) => {
   const row = e.target.closest('tr[data-id]');
