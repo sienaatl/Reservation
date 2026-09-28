@@ -8,7 +8,6 @@
 
   <div class="stats-grid">
     <article><span>Total Calls</span><strong id="stat-total">0</strong></article>
-    <article><span>Success Rate</span><strong id="stat-rate">—</strong></article>
     <article><span>Total Cost</span><strong id="stat-cost">$0.00</strong></article>
     <article><span>Total Minutes</span><strong id="stat-minutes">0</strong></article>
   </div>
@@ -167,8 +166,6 @@ async function loadCalls() {
 
   const stats = data.stats || {};
   document.getElementById('stat-total').textContent = stats.total || 0;
-  document.getElementById('stat-rate').textContent = stats.total
-    ? `${Math.round((stats.successful / stats.total) * 100)}%` : '—';
   document.getElementById('stat-cost').textContent = fmtCost(stats.total_cost_cents || 0);
   document.getElementById('stat-minutes').textContent = Math.round((stats.total_duration_ms || 0) / 60000).toLocaleString();
 
