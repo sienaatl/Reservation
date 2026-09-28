@@ -1135,18 +1135,18 @@ def guest_message_task():
     return jsonify({"ok": True, **process_review_requests(), **process_birthday_greetings()})
 
 
-@app.get("/tasks/sync-retell-calls")
-def sync_retell_calls_task():
-    """Backfill/resync: pulls call history from Retell's List Calls API and
-    upserts it into the local `calls` table. Needed once to bring in calls
-    made before this integration existed (the webhook only captures calls
-    going forward), and safe to re-run afterward as a catch-up in case a
-    webhook delivery was ever missed -- upserts are idempotent on call_id."""
-    if not CRON_SECRET or request.args.get("secret") != CRON_SECRET:
-        abort(403)
+def sync_retell_calls() -> int:
+    """Pulls call history from Retell's List Calls API and upserts it into
+    the local `calls` table. Shared by the CRON_SECRET-protected task route
+    (for scheduled/curl use) and the staff-session-protected Calls tab Sync
+    button (calls_sync()) -- the button can't use the /tasks/* route
+    directly without baking CRON_SECRET into frontend JS, which would leak
+    it to anyone viewing page source. Raises RuntimeError if Retell isn't
+    configured; upserts are idempotent on call_id so this is always safe
+    to re-run."""
     client = retell_client()
     if not client:
-        return jsonify({"ok": False, "error": "RETELL_API_KEY is not configured."}), 400
+        raise RuntimeError("RETELL_API_KEY is not configured.")
 
     synced = 0
     pagination_key = None
@@ -1161,6 +1161,21 @@ def sync_retell_calls_task():
         if not response.has_more or not response.pagination_key:
             break
         pagination_key = response.pagination_key
+    return synced
+
+
+@app.get("/tasks/sync-retell-calls")
+def sync_retell_calls_task():
+    """Backfill/resync: needed once to bring in calls made before this
+    integration existed (the webhook only captures calls going forward),
+    and safe to re-run afterward as a catch-up in case a webhook delivery
+    was ever missed."""
+    if not CRON_SECRET or request.args.get("secret") != CRON_SECRET:
+        abort(403)
+    try:
+        synced = sync_retell_calls()
+    except RuntimeError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
     return jsonify({"ok": True, "synced": synced})
 
 
@@ -2007,6 +2022,20 @@ def calls_page():
     return render_template("calls.html")
 
 
+@app.post("/calls/sync")
+def calls_sync():
+    """Staff-triggered resync from the Calls tab's Sync button. Same work as
+    /tasks/sync-retell-calls (sync_retell_calls()), just gated by the staff
+    session instead of CRON_SECRET, since a button in this page's own JS has
+    no safe way to hold that secret."""
+    require_staff_login()
+    try:
+        synced = sync_retell_calls()
+    except RuntimeError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    return jsonify({"ok": True, "synced": synced})
+
+
 @app.get("/api/calls")
 def api_calls():
     require_staff_login()
@@ -2019,7 +2048,10 @@ def api_calls():
     page = max(request.args.get("page", 1, type=int) or 1, 1)
     offset = (page - 1) * limit
 
-    query = "SELECT * FROM calls WHERE 1=1"
+    # web_call rows are test sessions run from Retell's own playground (e.g.
+    # call_id "test_call", perpetually "ongoing") -- this dashboard is about
+    # the real phone-call AI agent, so those never belong in the list.
+    query = "SELECT * FROM calls WHERE call_type = 'phone_call'"
     params = []
     if status_filter != "all":
         query += " AND call_status = ?"; params.append(status_filter)
@@ -2040,7 +2072,9 @@ def api_calls():
     stats = conn.execute(f"""
         SELECT COUNT(*) total,
                SUM(CASE WHEN call_successful=1 THEN 1 ELSE 0 END) successful,
-               SUM(CASE WHEN call_successful=0 THEN 1 ELSE 0 END) unsuccessful
+               SUM(CASE WHEN call_successful=0 THEN 1 ELSE 0 END) unsuccessful,
+               SUM(cost_cents) total_cost_cents,
+               SUM(duration_ms) total_duration_ms
         FROM ({query}) t
     """, params).fetchone()
     total = stats["total"] or 0
@@ -2061,6 +2095,8 @@ def api_calls():
             "total": total,
             "successful": stats["successful"] or 0,
             "unsuccessful": stats["unsuccessful"] or 0,
+            "total_cost_cents": stats["total_cost_cents"] or 0,
+            "total_duration_ms": stats["total_duration_ms"] or 0,
         },
     })
 
