@@ -16,6 +16,8 @@ from flask import Flask, render_template, request, redirect, url_for, flash, jso
 from werkzeug.security import generate_password_hash, check_password_hash
 from twilio.rest import Client
 from twilio.base.exceptions import TwilioRestException
+from retell import Retell
+from retell.lib.webhook_auth import verify as retell_verify_signature
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from login_security import safe_login_destination
@@ -51,6 +53,7 @@ CRON_SECRET = os.getenv("CRON_SECRET", "")
 REVIEW_URL = os.getenv("REVIEW_URL", "https://g.page/r/CYL3k1UEWlCKEBM/review")
 ORDER_ONLINE_URL = os.getenv("ORDER_ONLINE_URL", "https://order.toasttab.com/online/sienaatl")
 RESERVATION_UPDATE_NOTIFICATION_EMAIL = os.getenv("RESERVATION_UPDATE_NOTIFICATION_EMAIL", "info@sienaatl.com")
+RETELL_API_KEY = os.getenv("RETELL_API_KEY", "")
 BIRTHDAY_SMS_ENABLED = os.getenv("BIRTHDAY_SMS_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
 REVIEW_SMS_ENABLED = os.getenv("REVIEW_SMS_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
 RUNNING_LATE_MINUTES = int(os.getenv("RUNNING_LATE_MINUTES", "15"))
@@ -362,6 +365,31 @@ def init_db():
         is_read INTEGER NOT NULL DEFAULT 0,
         source TEXT NOT NULL DEFAULT 'system',
         created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS calls (
+        call_id TEXT PRIMARY KEY,
+        agent_id TEXT,
+        agent_name TEXT,
+        call_type TEXT,
+        call_status TEXT,
+        direction TEXT,
+        from_number TEXT,
+        to_number TEXT,
+        start_timestamp BIGINT,
+        end_timestamp BIGINT,
+        duration_ms INTEGER,
+        disconnection_reason TEXT,
+        transfer_destination TEXT,
+        call_summary TEXT,
+        user_sentiment TEXT,
+        call_successful INTEGER,
+        recording_url TEXT,
+        e2e_latency_ms REAL,
+        cost_cents REAL,
+        raw_data TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS checklists (
@@ -822,6 +850,69 @@ def send_sms(to_phone: str, body: str, source: str = "system") -> bool:
         return False
 
 
+def retell_client():
+    return Retell(api_key=RETELL_API_KEY) if RETELL_API_KEY else None
+
+
+def call_to_dict(call) -> dict:
+    """Webhook payloads arrive as plain JSON (already a dict); List/Get Call
+    SDK responses arrive as pydantic models. Normalizing both to a dict here
+    means upsert_call() only has to know one shape."""
+    return call if isinstance(call, dict) else call.model_dump(mode="json")
+
+
+def upsert_call(call) -> None:
+    """Stores/updates one Retell AI call row, keyed on call_id -- called from
+    both the webhook (call_started/call_ended/call_analyzed, each a partial
+    snapshot) and the List Calls backfill/resync task, so every write is an
+    upsert rather than an insert. call_analysis/call_cost/latency are only
+    populated once Retell's post-call analysis finishes (call_analyzed), so
+    those columns start NULL and fill in on a later event for the same call.
+    The full raw payload is kept as JSON so the Calls tab's detail view (full
+    transcript, recording, etc.) doesn't need a separate Retell API call."""
+    d = call_to_dict(call)
+    call_id = d.get("call_id")
+    if not call_id:
+        return
+    call_analysis = d.get("call_analysis") or {}
+    call_cost = d.get("call_cost") or {}
+    latency = d.get("latency") or {}
+    e2e = latency.get("e2e") or {}
+    call_successful = call_analysis.get("call_successful")
+    now = datetime.now().isoformat(timespec="seconds")
+    conn = db()
+    conn.execute("""
+        INSERT INTO calls(
+            call_id, agent_id, agent_name, call_type, call_status, direction,
+            from_number, to_number, start_timestamp, end_timestamp, duration_ms,
+            disconnection_reason, transfer_destination, call_summary, user_sentiment,
+            call_successful, recording_url, e2e_latency_ms, cost_cents, raw_data,
+            created_at, updated_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT (call_id) DO UPDATE SET
+            agent_id=excluded.agent_id, agent_name=excluded.agent_name, call_type=excluded.call_type,
+            call_status=excluded.call_status, direction=excluded.direction,
+            from_number=excluded.from_number, to_number=excluded.to_number,
+            start_timestamp=excluded.start_timestamp, end_timestamp=excluded.end_timestamp,
+            duration_ms=excluded.duration_ms, disconnection_reason=excluded.disconnection_reason,
+            transfer_destination=excluded.transfer_destination, call_summary=excluded.call_summary,
+            user_sentiment=excluded.user_sentiment, call_successful=excluded.call_successful,
+            recording_url=excluded.recording_url, e2e_latency_ms=excluded.e2e_latency_ms,
+            cost_cents=excluded.cost_cents, raw_data=excluded.raw_data, updated_at=excluded.updated_at
+    """, (
+        call_id, d.get("agent_id"), d.get("agent_name"), d.get("call_type"), d.get("call_status"),
+        d.get("direction"), d.get("from_number"), d.get("to_number"),
+        d.get("start_timestamp"), d.get("end_timestamp"), d.get("duration_ms"),
+        d.get("disconnection_reason"), d.get("transfer_destination"),
+        call_analysis.get("call_summary"), call_analysis.get("user_sentiment"),
+        (1 if call_successful else 0) if call_successful is not None else None,
+        d.get("recording_url"), e2e.get("p50"), call_cost.get("combined_cost"),
+        json.dumps(d), now, now
+    ))
+    conn.commit()
+    conn.close()
+
+
 def reservation_sms_text(reservation, kind: str = "confirmed") -> str:
     # Kept deliberately short (target well under the ~153-char single-segment
     # budget) everywhere a link is included -- a longer body forces Twilio to
@@ -1042,6 +1133,61 @@ def guest_message_task():
     if not CRON_SECRET or request.args.get("secret") != CRON_SECRET:
         abort(403)
     return jsonify({"ok": True, **process_review_requests(), **process_birthday_greetings()})
+
+
+@app.get("/tasks/sync-retell-calls")
+def sync_retell_calls_task():
+    """Backfill/resync: pulls call history from Retell's List Calls API and
+    upserts it into the local `calls` table. Needed once to bring in calls
+    made before this integration existed (the webhook only captures calls
+    going forward), and safe to re-run afterward as a catch-up in case a
+    webhook delivery was ever missed -- upserts are idempotent on call_id."""
+    if not CRON_SECRET or request.args.get("secret") != CRON_SECRET:
+        abort(403)
+    client = retell_client()
+    if not client:
+        return jsonify({"ok": False, "error": "RETELL_API_KEY is not configured."}), 400
+
+    synced = 0
+    pagination_key = None
+    while True:
+        params = {"limit": 1000, "sort_order": "descending"}
+        if pagination_key:
+            params["pagination_key"] = pagination_key
+        response = client.call.list(**params)
+        for call in response.items:
+            upsert_call(call)
+            synced += 1
+        if not response.has_more or not response.pagination_key:
+            break
+        pagination_key = response.pagination_key
+    return jsonify({"ok": True, "synced": synced})
+
+
+@app.post("/retell/webhook")
+def retell_webhook():
+    """Receives call_started/call_ended/call_analyzed events from Retell AI
+    (the phone-call AI agent), configured as this agent's webhook URL in the
+    Retell dashboard. Every event carries the call's current state, so this
+    just upserts on call_id regardless of which event fired -- call_analyzed
+    is the one that actually fills in the summary/sentiment/success, since
+    that's only ready once Retell's post-call analysis completes. Signature
+    verification (HMAC, via the SDK's verify()) is required here, unlike
+    /twilio/incoming, because Retell's payload includes a checkable
+    signature and this endpoint has no other way to confirm a request
+    claiming to be Retell actually is."""
+    raw_body = request.get_data(as_text=True)
+    signature = request.headers.get("x-retell-signature", "")
+    if not RETELL_API_KEY or not retell_verify_signature(raw_body, RETELL_API_KEY, signature):
+        # Not abort(401): the global 401 handler redirects non-/api/ paths to
+        # the staff login page, which would send Retell a 302 instead of a
+        # plain 401 -- this has to reject the request directly instead.
+        return jsonify({"error": "Invalid signature."}), 401
+    payload = request.get_json(silent=True) or {}
+    call = payload.get("call")
+    if call:
+        upsert_call(call)
+    return jsonify({"ok": True})
 
 
 @app.post("/twilio/incoming")
@@ -1849,6 +1995,97 @@ def api_sms_conversation_send(phone):
     if not send_sms(phone, body, source="staff"):
         return jsonify({"ok": False, "error": "Could not send SMS. Check the phone number and Twilio settings."}), 502
     return jsonify({"ok": True})
+
+
+@app.get("/calls")
+def calls_page():
+    """Retell AI call history: every phone-call the AI agent has handled,
+    synced from Retell (backfilled once via /tasks/sync-retell-calls, kept
+    current afterward by /retell/webhook), mirroring Retell's own Call
+    History table/detail view inside this dashboard."""
+    require_staff_login()
+    return render_template("calls.html")
+
+
+@app.get("/api/calls")
+def api_calls():
+    require_staff_login()
+    status_filter = request.args.get("status", "all")
+    direction_filter = request.args.get("direction", "all")
+    sentiment_filter = request.args.get("sentiment", "all")
+    outcome_filter = request.args.get("outcome", "all")
+    search = request.args.get("search", "").strip()
+    limit = min(max(request.args.get("limit", 50, type=int) or 50, 1), 200)
+    page = max(request.args.get("page", 1, type=int) or 1, 1)
+    offset = (page - 1) * limit
+
+    query = "SELECT * FROM calls WHERE 1=1"
+    params = []
+    if status_filter != "all":
+        query += " AND call_status = ?"; params.append(status_filter)
+    if direction_filter != "all":
+        query += " AND direction = ?"; params.append(direction_filter)
+    if sentiment_filter != "all":
+        query += " AND user_sentiment = ?"; params.append(sentiment_filter)
+    if outcome_filter == "successful":
+        query += " AND call_successful = 1"
+    elif outcome_filter == "unsuccessful":
+        query += " AND call_successful = 0"
+    if search:
+        query += " AND (lower(call_id) LIKE ? OR from_number LIKE ? OR to_number LIKE ?)"
+        needle = f"%{search.lower()}%"
+        params.extend([needle, needle, needle])
+
+    conn = db()
+    stats = conn.execute(f"""
+        SELECT COUNT(*) total,
+               SUM(CASE WHEN call_successful=1 THEN 1 ELSE 0 END) successful,
+               SUM(CASE WHEN call_successful=0 THEN 1 ELSE 0 END) unsuccessful
+        FROM ({query}) t
+    """, params).fetchone()
+    total = stats["total"] or 0
+    query += " ORDER BY start_timestamp DESC NULLS LAST LIMIT ? OFFSET ?"
+    calls = conn.execute(query, params + [limit, offset]).fetchall()
+    conn.close()
+
+    items = []
+    for c in calls:
+        d = dict(c)
+        d.pop("raw_data", None)  # keep the list payload light -- the detail endpoint has the full thing
+        items.append(d)
+
+    return jsonify({
+        "items": items, "page": page, "limit": limit,
+        "pages": max(1, (total + limit - 1) // limit),
+        "stats": {
+            "total": total,
+            "successful": stats["successful"] or 0,
+            "unsuccessful": stats["unsuccessful"] or 0,
+        },
+    })
+
+
+@app.get("/api/calls/<call_id>")
+def api_call_detail(call_id):
+    """Full detail for one call, plus a lightweight "related calls" list
+    (same from_number) approximating Retell's own Contacts feature -- this
+    app has no separate Contacts API integration, just the calls it already
+    has locally."""
+    require_staff_login()
+    conn = db()
+    call = conn.execute("SELECT * FROM calls WHERE call_id=?", (call_id,)).fetchone()
+    if not call:
+        conn.close()
+        return jsonify({"ok": False, "error": "Call not found."}), 404
+    related = conn.execute("""
+        SELECT call_id, start_timestamp, duration_ms, direction, call_successful
+        FROM calls WHERE from_number = ? AND call_id != ? AND from_number IS NOT NULL
+        ORDER BY start_timestamp DESC LIMIT 10
+    """, (call["from_number"], call_id)).fetchall()
+    conn.close()
+    d = dict(call)
+    raw = json.loads(d.pop("raw_data") or "{}")
+    return jsonify({"ok": True, "call": d, "raw": raw, "related": [dict(r) for r in related]})
 
 
 @app.get("/sw.js")
