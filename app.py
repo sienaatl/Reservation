@@ -348,6 +348,7 @@ def init_db():
         twilio_sid TEXT,
         twilio_status TEXT,
         is_read INTEGER NOT NULL DEFAULT 0,
+        source TEXT NOT NULL DEFAULT 'system',
         created_at TEXT NOT NULL
     );
 
@@ -405,6 +406,7 @@ def init_db():
         "ALTER TABLE guest_profiles ADD COLUMN IF NOT EXISTS marketing_opt_in INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE guest_profiles ADD COLUMN IF NOT EXISTS marketing_opt_out_at TEXT",
         "ALTER TABLE guest_profiles ADD COLUMN IF NOT EXISTS birthday_sms_sent_year INTEGER",
+        "ALTER TABLE sms_messages ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'system'",
     ]
     for statement in alter_statements:
         conn.execute(statement)
@@ -762,18 +764,23 @@ def normalize_phone(value: str) -> str:
 
 
 def log_sms_message(phone: str, direction: str, body: str, twilio_sid: str | None = None,
-                     twilio_status: str | None = None, is_read: bool = False) -> None:
+                     twilio_status: str | None = None, is_read: bool = False,
+                     source: str = "system") -> None:
     """Appends one row to the unified SMS thread (SMS tab) backing every
     inbound/outbound text, whatever sent or received it -- reservation
     confirmations, reminders, campaigns, the AI-agent routes, and manual
-    staff replies alike. Best-effort: never raises, so a logging hiccup
-    can't take down the SMS send/receive path it's attached to."""
+    staff replies alike. `source` distinguishes a staff reply typed in the
+    SMS tab ('staff') from every automated send ('system', the default --
+    confirmations/reminders/campaigns/n8n-agent routes/compliance replies)
+    and an inbound guest text ('guest'), powering the SMS tab's filter and
+    bubble styling. Best-effort: never raises, so a logging hiccup can't
+    take down the SMS send/receive path it's attached to."""
     try:
         conn = db()
         conn.execute(
-            "INSERT INTO sms_messages(phone, direction, body, twilio_sid, twilio_status, is_read, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (phone, direction, body, twilio_sid, twilio_status, 1 if is_read else 0,
+            "INSERT INTO sms_messages(phone, direction, body, twilio_sid, twilio_status, is_read, source, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (phone, direction, body, twilio_sid, twilio_status, 1 if is_read else 0, source,
              datetime.now().isoformat(timespec="seconds"))
         )
         conn.commit()
@@ -782,7 +789,7 @@ def log_sms_message(phone: str, direction: str, body: str, twilio_sid: str | Non
         app.logger.exception("Unable to log SMS message to sms_messages.")
 
 
-def send_sms(to_phone: str, body: str) -> bool:
+def send_sms(to_phone: str, body: str, source: str = "system") -> bool:
     """Send SMS through Twilio. Reservation actions still succeed if SMS is unavailable."""
     recipient = normalize_phone(to_phone)
     if not SMS_ENABLED or not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN or not TWILIO_PHONE_NUMBER:
@@ -796,7 +803,7 @@ def send_sms(to_phone: str, body: str) -> bool:
             body=body[:1600], from_=TWILIO_PHONE_NUMBER, to=recipient
         )
         log_sms_message(recipient, "outbound", body[:1600], twilio_sid=message.sid,
-                         twilio_status=message.status, is_read=True)
+                         twilio_status=message.status, is_read=True, source=source)
         return True
     except TwilioRestException:
         app.logger.exception("Unable to send Twilio SMS.")
@@ -1040,7 +1047,7 @@ def twilio_incoming():
 
     if phone and raw_body:
         log_sms_message(phone, "inbound", raw_body, twilio_sid=request.form.get("MessageSid"),
-                         twilio_status="received")
+                         twilio_status="received", source="guest")
 
     if body in {"STOP", "STOPALL", "UNSUBSCRIBE", "CANCEL", "END", "QUIT"} and phone:
         conn = db()
@@ -1780,6 +1787,7 @@ def api_sms_conversations():
                 phone,
                 body AS last_message,
                 direction AS last_direction,
+                source AS last_source,
                 created_at AS last_at,
                 (SELECT COUNT(*) FROM sms_messages u
                  WHERE u.phone = sms_messages.phone AND u.direction='inbound' AND u.is_read=0) AS unread_count
@@ -1825,7 +1833,7 @@ def api_sms_conversation_send(phone):
     body = (data.get("body") or "").strip()
     if not body:
         return jsonify({"ok": False, "error": "Message body is required."}), 400
-    if not send_sms(phone, body):
+    if not send_sms(phone, body, source="staff"):
         return jsonify({"ok": False, "error": "Could not send SMS. Check the phone number and Twilio settings."}), 502
     return jsonify({"ok": True})
 
