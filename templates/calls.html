@@ -62,7 +62,11 @@
         </tr>
       </thead>
       <tbody id="call-tbody">
-        <tr><td colspan="13" class="crm-loading">Loading calls…</td></tr>
+        {% for _ in range(10) %}
+        <tr class="skeleton-row">
+          {% for _ in range(13) %}<td><div class="skeleton-bar" style="width:{{ range(40,80)|random }}%"></div></td>{% endfor %}
+        </tr>
+        {% endfor %}
       </tbody>
     </table>
   </div>
@@ -151,9 +155,17 @@ function rowHtml(c) {
     </tr>`;
 }
 
+function skeletonRowsHtml(count) {
+  const widths = [70, 40, 55, 45, 80, 60, 50, 55, 65, 65, 45, 60, 50];
+  const row = '<tr class="skeleton-row">' +
+    widths.map(w => `<td><div class="skeleton-bar" style="width:${w}%"></div></td>`).join('') +
+    '</tr>';
+  return row.repeat(count);
+}
+
 async function loadCalls() {
   const tbody = document.getElementById('call-tbody');
-  tbody.innerHTML = '<tr><td colspan="13" class="crm-loading">Loading calls…</td></tr>';
+  tbody.innerHTML = skeletonRowsHtml(10);
   const response = await fetch(`/api/calls?${buildQuery()}`);
   const data = await response.json();
   currentCalls = data.items || [];
