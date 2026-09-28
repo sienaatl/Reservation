@@ -388,3 +388,8 @@ small{color:var(--muted)}
 .sms-composer button{width:auto;flex-shrink:0}
 .sms-empty-panel{display:flex;align-items:center;justify-content:center;height:75vh;color:var(--muted);text-align:center;padding:20px}
 @media(max-width:700px){.sms-chat-head{flex-wrap:wrap}.sms-filter-tabs{order:3;width:100%}}
+
+/* Skeleton loading rows (Calls tab table) -- shown in place of real rows
+   while a fetch is in flight, instead of a plain "Loading…" text row. */
+.skeleton-bar{height:13px;border-radius:4px;background:linear-gradient(90deg,#ece3d4 25%,#f6f1e7 37%,#ece3d4 63%);background-size:400% 100%;animation:skeleton-shimmer 1.4s ease infinite}
+@keyframes skeleton-shimmer{0%{background-position:100% 50%}100%{background-position:0 50%}}
