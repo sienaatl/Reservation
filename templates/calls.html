@@ -221,14 +221,6 @@ document.getElementById('call-tbody').addEventListener('click', (e) => {
 
 const drawer = document.getElementById('call-drawer');
 
-function transcriptHtml(transcriptObject) {
-  if (!transcriptObject || !transcriptObject.length) return '<div class="empty-state">No transcript available.</div>';
-  return `<div class="sms-messages" style="background:transparent;padding:0">` + transcriptObject.map(turn => {
-    const cls = turn.role === 'agent' ? 'outbound staff' : (turn.role === 'user' ? 'inbound' : 'outbound system');
-    return `<div class="sms-bubble ${cls}"><div class="sms-bubble-body">${esc(turn.content)}</div></div>`;
-  }).join('') + `</div>`;
-}
-
 function relatedCallsHtml(related) {
   if (!related || !related.length) return '<div class="empty-state">No other calls from this number.</div>';
   return related.map(r => `
@@ -254,7 +246,6 @@ async function openDrawer(callId) {
     return;
   }
   const c = data.call;
-  const raw = data.raw || {};
 
   document.getElementById('call-drawer-body').innerHTML = `
     <div class="crm-drawer-grid">
@@ -277,10 +268,7 @@ async function openDrawer(callId) {
     <h2 style="font-size:16px;margin-bottom:8px">Summary</h2>
     <p class="muted-copy" style="margin-bottom:20px">${esc(c.call_summary || 'Not available.')}</p>
 
-    <h2 style="font-size:16px;margin-bottom:8px">Transcript</h2>
-    ${transcriptHtml(raw.transcript_object)}
-
-    <h2 style="font-size:16px;margin:20px 0 8px">Other Calls From This Number</h2>
+    <h2 style="font-size:16px;margin-bottom:8px">Other Calls From This Number</h2>
     ${relatedCallsHtml(data.related)}
   `;
 }
