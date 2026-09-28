@@ -351,3 +351,32 @@ small{color:var(--muted)}
 .install-instructions-card ol{margin:0;padding-left:20px;display:grid;gap:10px;font-size:14px;color:var(--ink)}
 .install-instructions-card .dialog-close{position:absolute;top:14px;right:14px}
 @media(max-width:600px){.install-banner{flex-direction:column;align-items:stretch;text-align:center}}
+
+/* SMS tab: conversation list (left) + chat panel (right), permanent
+   split-pane layout rather than the Support/Guests slide-out drawer --
+   this one's meant to stay open while staff work a conversation. */
+.sms-layout{display:grid;grid-template-columns:340px 1fr;gap:20px;margin-top:20px;align-items:start}
+@media(max-width:900px){.sms-layout{grid-template-columns:1fr}}
+.sms-conversation-list{padding:0;max-height:75vh;overflow-y:auto}
+.sms-conv-row{display:flex;gap:10px;align-items:flex-start;padding:14px 16px;border-bottom:1px solid var(--line);cursor:pointer}
+.sms-conv-row:hover{background:#faf7f1}
+.sms-conv-row.active{background:#f3e9d8}
+.sms-conv-main{flex:1;min-width:0}
+.sms-conv-name{font-weight:700;font-size:14px;display:flex;justify-content:space-between;gap:8px}
+.sms-conv-preview{color:var(--muted);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px}
+.sms-conv-preview.outbound::before{content:'You: '}
+.sms-conv-time{color:var(--muted);font-size:11px;white-space:nowrap;flex-shrink:0}
+.sms-conv-unread{background:#c0392b;color:#fff;border-radius:999px;min-width:20px;height:20px;display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;padding:0 6px;flex-shrink:0}
+.sms-chat-panel{display:flex;flex-direction:column;height:75vh;padding:0;overflow:hidden}
+.sms-chat-head{padding:16px 20px;border-bottom:1px solid var(--line);flex-shrink:0}
+.sms-chat-head h2{font-size:18px;margin:0}
+.sms-chat-head small{color:var(--muted);display:block;margin-top:2px}
+.sms-messages{flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:10px;background:#faf7f1}
+.sms-bubble{max-width:70%;padding:10px 14px;border-radius:14px;font-size:14px;line-height:1.4;white-space:pre-wrap;word-break:break-word}
+.sms-bubble.inbound{align-self:flex-start;background:#fff;border:1px solid var(--line);border-bottom-left-radius:4px}
+.sms-bubble.outbound{align-self:flex-end;background:var(--burgundy);color:#fff;border-bottom-right-radius:4px}
+.sms-bubble time{display:block;font-size:10px;opacity:.65;margin-top:4px}
+.sms-composer{display:flex;gap:10px;padding:16px 20px;border-top:1px solid var(--line);flex-shrink:0}
+.sms-composer textarea{resize:none;min-height:44px;max-height:120px}
+.sms-composer button{width:auto;flex-shrink:0}
+.sms-empty-panel{display:flex;align-items:center;justify-content:center;height:75vh;color:var(--muted);text-align:center;padding:20px}

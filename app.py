@@ -340,6 +340,17 @@ def init_db():
         created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS sms_messages (
+        id SERIAL PRIMARY KEY,
+        phone TEXT NOT NULL,
+        direction TEXT NOT NULL,
+        body TEXT NOT NULL,
+        twilio_sid TEXT,
+        twilio_status TEXT,
+        is_read INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS checklists (
         id SERIAL PRIMARY KEY,
         kind TEXT NOT NULL UNIQUE,
@@ -750,6 +761,27 @@ def normalize_phone(value: str) -> str:
     return ""
 
 
+def log_sms_message(phone: str, direction: str, body: str, twilio_sid: str | None = None,
+                     twilio_status: str | None = None, is_read: bool = False) -> None:
+    """Appends one row to the unified SMS thread (SMS tab) backing every
+    inbound/outbound text, whatever sent or received it -- reservation
+    confirmations, reminders, campaigns, the AI-agent routes, and manual
+    staff replies alike. Best-effort: never raises, so a logging hiccup
+    can't take down the SMS send/receive path it's attached to."""
+    try:
+        conn = db()
+        conn.execute(
+            "INSERT INTO sms_messages(phone, direction, body, twilio_sid, twilio_status, is_read, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (phone, direction, body, twilio_sid, twilio_status, 1 if is_read else 0,
+             datetime.now().isoformat(timespec="seconds"))
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        app.logger.exception("Unable to log SMS message to sms_messages.")
+
+
 def send_sms(to_phone: str, body: str) -> bool:
     """Send SMS through Twilio. Reservation actions still succeed if SMS is unavailable."""
     recipient = normalize_phone(to_phone)
@@ -760,9 +792,11 @@ def send_sms(to_phone: str, body: str) -> bool:
         app.logger.warning("SMS not sent: invalid recipient phone number.")
         return False
     try:
-        Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN).messages.create(
+        message = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN).messages.create(
             body=body[:1600], from_=TWILIO_PHONE_NUMBER, to=recipient
         )
+        log_sms_message(recipient, "outbound", body[:1600], twilio_sid=message.sid,
+                         twilio_status=message.status, is_read=True)
         return True
     except TwilioRestException:
         app.logger.exception("Unable to send Twilio SMS.")
@@ -1000,8 +1034,13 @@ def twilio_incoming():
     behavior has to match -- a silent 204 with no reply was a compliance
     gap even before START/YES/UNSTOP/HELP existed here at all."""
     phone = normalize_phone(request.form.get("From", ""))
-    body = request.form.get("Body", "").strip().upper()
+    raw_body = request.form.get("Body", "").strip()
+    body = raw_body.upper()
     reply = None
+
+    if phone and raw_body:
+        log_sms_message(phone, "inbound", raw_body, twilio_sid=request.form.get("MessageSid"),
+                         twilio_status="received")
 
     if body in {"STOP", "STOPALL", "UNSUBSCRIBE", "CANCEL", "END", "QUIT"} and phone:
         conn = db()
@@ -1019,6 +1058,8 @@ def twilio_incoming():
         reply = f"Siena Restaurant: For help call {RESTAURANT_PHONE}. Reply STOP to opt-out."
 
     if reply:
+        if phone:
+            log_sms_message(phone, "outbound", reply, twilio_status="sent", is_read=True)
         twiml = f"<?xml version='1.0' encoding='UTF-8'?><Response><Message>{xml_escape(reply)}</Message></Response>"
         return Response(twiml, mimetype="text/xml")
     return ("", 204)
@@ -1204,6 +1245,20 @@ def inject_open_support_ticket_count():
     count = conn.execute("SELECT COUNT(*) n FROM support_tickets WHERE status='open'").fetchone()["n"]
     conn.close()
     return {"open_support_tickets": count}
+
+
+@app.context_processor
+def inject_unread_sms_count():
+    """Powers the nav badge next to "SMS" -- count of inbound texts not yet
+    opened in the SMS tab. Kept live client-side too: sms.html updates this
+    same badge on every poll/conversation-open so it doesn't need a page
+    reload, mirroring inject_open_support_ticket_count() above."""
+    if not current_staff():
+        return {}
+    conn = db()
+    count = conn.execute("SELECT COUNT(*) n FROM sms_messages WHERE direction='inbound' AND is_read=0").fetchone()["n"]
+    conn.close()
+    return {"unread_sms_count": count}
 
 
 LOGIN_RATE_LIMIT_WINDOW_MINUTES = 15
@@ -1676,6 +1731,102 @@ def mark_support_notifications_read():
     conn = db()
     conn.execute("UPDATE support_notifications SET is_read=1 WHERE is_read=0")
     conn.commit(); conn.close()
+    return jsonify({"ok": True})
+
+
+def guest_name_for_phone(conn, phone: str) -> str | None:
+    """sms_messages.phone is always Twilio's E.164 form (see normalize_phone()),
+    but guest_profiles/reservations keep whatever format the guest or booking
+    source typed in -- so this matches on the last 10 digits rather than an
+    exact string, the same slack normalize_phone() already assumes a bare
+    10-digit US number needs."""
+    row = conn.execute(
+        "SELECT guest_name FROM guest_profiles "
+        "WHERE right(regexp_replace(phone, '\\D', '', 'g'), 10) = right(regexp_replace(?, '\\D', '', 'g'), 10) "
+        "LIMIT 1", (phone,)
+    ).fetchone()
+    if row and row["guest_name"]:
+        return row["guest_name"]
+    row = conn.execute(
+        "SELECT guest_name FROM reservations "
+        "WHERE right(regexp_replace(phone, '\\D', '', 'g'), 10) = right(regexp_replace(?, '\\D', '', 'g'), 10) "
+        "ORDER BY created_at DESC LIMIT 1", (phone,)
+    ).fetchone()
+    return row["guest_name"] if row else None
+
+
+@app.get("/sms")
+def sms_page():
+    """Two-way SMS inbox: every text sent or received through the Twilio
+    number, threaded by phone number. /twilio/incoming logs every inbound
+    message (not just the STOP/START/HELP keywords it already replies to)
+    and send_sms() logs every outbound one, so this covers manual replies
+    from this tab alongside confirmations, reminders, and campaigns sent
+    elsewhere in the app -- see log_sms_message()."""
+    require_staff_login()
+    return render_template("sms.html")
+
+
+@app.get("/api/sms/conversations")
+def api_sms_conversations():
+    """One row per phone number, newest message first, with a guest-name
+    lookup (guest_profiles first, most recent reservation as a fallback)
+    and a per-conversation unread count powering the badge in the list."""
+    require_staff_login()
+    conn = db()
+    rows = conn.execute("""
+        SELECT * FROM (
+            SELECT DISTINCT ON (phone)
+                phone,
+                body AS last_message,
+                direction AS last_direction,
+                created_at AS last_at,
+                (SELECT COUNT(*) FROM sms_messages u
+                 WHERE u.phone = sms_messages.phone AND u.direction='inbound' AND u.is_read=0) AS unread_count
+            FROM sms_messages
+            ORDER BY phone, created_at DESC, id DESC
+        ) latest
+        ORDER BY last_at DESC
+        LIMIT 300
+    """).fetchall()
+    conversations = []
+    for r in rows:
+        d = dict(r)
+        d["guest_name"] = guest_name_for_phone(conn, d["phone"])
+        conversations.append(d)
+    conn.close()
+    return jsonify({"items": conversations})
+
+
+@app.get("/api/sms/conversations/<path:phone>/messages")
+def api_sms_conversation_messages(phone):
+    """Full thread for one phone number, oldest first. Opening a
+    conversation marks its unread inbound messages read, which is also
+    what clears that row's badge and the nav-wide unread count."""
+    require_staff_login()
+    conn = db()
+    messages = conn.execute(
+        "SELECT * FROM sms_messages WHERE phone=? ORDER BY created_at ASC, id ASC", (phone,)
+    ).fetchall()
+    conn.execute("UPDATE sms_messages SET is_read=1 WHERE phone=? AND direction='inbound' AND is_read=0", (phone,))
+    conn.commit()
+    guest_name = guest_name_for_phone(conn, phone)
+    conn.close()
+    return jsonify({"items": [dict(m) for m in messages], "guest_name": guest_name, "phone": phone})
+
+
+@app.post("/api/sms/conversations/<path:phone>/send")
+def api_sms_conversation_send(phone):
+    """Staff-driven reply from the SMS tab. Session-only (no PIN) since this
+    is a staff action, not an AI-agent one -- see update_support_ticket_status()
+    for the same distinction on the Support page."""
+    require_staff_login()
+    data = request.get_json(silent=True) or request.form
+    body = (data.get("body") or "").strip()
+    if not body:
+        return jsonify({"ok": False, "error": "Message body is required."}), 400
+    if not send_sms(phone, body):
+        return jsonify({"ok": False, "error": "Could not send SMS. Check the phone number and Twilio settings."}), 502
     return jsonify({"ok": True})
 
 
