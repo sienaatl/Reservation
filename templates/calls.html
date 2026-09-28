@@ -1,0 +1,276 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="admin-shell">
+  <div class="admin-heading">
+    <div><p class="eyebrow">Retell AI</p><h1>Call History</h1></div>
+  </div>
+
+  <div class="stats-grid">
+    <article><span>Total Calls</span><strong id="stat-total">0</strong></article>
+    <article><span>Successful</span><strong id="stat-successful">0</strong></article>
+    <article><span>Unsuccessful</span><strong id="stat-unsuccessful">0</strong></article>
+    <article><span>Success Rate</span><strong id="stat-rate">—</strong></article>
+  </div>
+
+  <div class="panel crm-toolbar">
+    <input id="call-search" type="search" placeholder="Search call ID or phone number" autocomplete="off">
+    <div class="crm-filters">
+      <select id="filter-status">
+        <option value="all">All statuses</option>
+        <option value="ended">Ended</option>
+        <option value="ongoing">Ongoing</option>
+        <option value="error">Error</option>
+        <option value="not_connected">Not connected</option>
+      </select>
+      <select id="filter-direction">
+        <option value="all">All directions</option>
+        <option value="inbound">Inbound</option>
+        <option value="outbound">Outbound</option>
+      </select>
+      <select id="filter-sentiment">
+        <option value="all">All sentiment</option>
+        <option value="Positive">Positive</option>
+        <option value="Neutral">Neutral</option>
+        <option value="Negative">Negative</option>
+        <option value="Unknown">Unknown</option>
+      </select>
+      <select id="filter-outcome">
+        <option value="all">All outcomes</option>
+        <option value="successful">Successful</option>
+        <option value="unsuccessful">Unsuccessful</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="panel crm-table-wrap">
+    <table class="crm-table">
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Duration</th>
+          <th>Type</th>
+          <th>Cost</th>
+          <th>Call ID</th>
+          <th>End Reason</th>
+          <th>Status</th>
+          <th>Sentiment</th>
+          <th>From</th>
+          <th>To</th>
+          <th>Direction</th>
+          <th>Outcome</th>
+          <th>Latency</th>
+        </tr>
+      </thead>
+      <tbody id="call-tbody">
+        <tr><td colspan="13" class="crm-loading">Loading calls…</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="crm-pagination">
+    <span id="crm-range" class="muted-copy"></span>
+    <div class="crm-pager">
+      <button id="crm-prev" type="button" class="secondary-action">Previous</button>
+      <span id="crm-pages"></span>
+      <button id="crm-next" type="button" class="secondary-action">Next</button>
+    </div>
+  </div>
+</section>
+
+<div id="call-drawer" class="crm-drawer" aria-hidden="true">
+  <div class="crm-drawer-backdrop" id="call-drawer-backdrop"></div>
+  <div class="crm-drawer-panel">
+    <div class="crm-drawer-head">
+      <h2 id="call-drawer-title">Call</h2>
+      <button type="button" class="dialog-close" id="call-drawer-close">×</button>
+    </div>
+    <div id="call-drawer-body">Loading…</div>
+  </div>
+</div>
+
+<script>
+const state = { status: 'all', direction: 'all', sentiment: 'all', outcome: 'all', search: '', page: 1, pageSize: 50 };
+let searchTimer = null;
+let currentCalls = [];
+
+function esc(value) {
+  return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function fmtDuration(ms) {
+  if (!ms && ms !== 0) return '—';
+  const totalSec = Math.round(ms / 1000);
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function fmtCost(cents) {
+  if (cents === null || cents === undefined) return '—';
+  return `$${(cents / 100).toFixed(3)}`;
+}
+
+function fmtTime(ms) {
+  if (!ms) return '—';
+  return new Date(ms).toLocaleString();
+}
+
+function fmtReason(reason) {
+  return reason ? esc(reason.replace(/_/g, ' ')) : '—';
+}
+
+function outcomeLabel(successful) {
+  if (successful === 1 || successful === true) return '<span class="crm-status crm-status-active">Successful</span>';
+  if (successful === 0 || successful === false) return '<span class="crm-status crm-status-cancelled">Unsuccessful</span>';
+  return '—';
+}
+
+function buildQuery() {
+  return new URLSearchParams({
+    status: state.status, direction: state.direction, sentiment: state.sentiment,
+    outcome: state.outcome, search: state.search, page: state.page, limit: state.pageSize,
+  }).toString();
+}
+
+function rowHtml(c) {
+  return `
+    <tr data-id="${esc(c.call_id)}" class="crm-row">
+      <td>${esc(fmtTime(c.start_timestamp))}</td>
+      <td>${esc(fmtDuration(c.duration_ms))}</td>
+      <td>${esc(c.call_type)}</td>
+      <td>${esc(fmtCost(c.cost_cents))}</td>
+      <td>${esc(c.call_id)}</td>
+      <td>${fmtReason(c.disconnection_reason)}</td>
+      <td>${esc(c.call_status)}</td>
+      <td>${esc(c.user_sentiment || '—')}</td>
+      <td>${esc(c.from_number || '—')}</td>
+      <td>${esc(c.to_number || '—')}</td>
+      <td>${esc(c.direction || '—')}</td>
+      <td>${outcomeLabel(c.call_successful)}</td>
+      <td>${c.e2e_latency_ms != null ? Math.round(c.e2e_latency_ms) + 'ms' : '—'}</td>
+    </tr>`;
+}
+
+async function loadCalls() {
+  const tbody = document.getElementById('call-tbody');
+  tbody.innerHTML = '<tr><td colspan="13" class="crm-loading">Loading calls…</td></tr>';
+  const response = await fetch(`/api/calls?${buildQuery()}`);
+  const data = await response.json();
+  currentCalls = data.items || [];
+
+  if (!currentCalls.length) {
+    tbody.innerHTML = '<tr><td colspan="13" class="empty-state">No calls match these filters.</td></tr>';
+  } else {
+    tbody.innerHTML = currentCalls.map(rowHtml).join('');
+  }
+
+  const stats = data.stats || {};
+  document.getElementById('stat-total').textContent = stats.total || 0;
+  document.getElementById('stat-successful').textContent = stats.successful || 0;
+  document.getElementById('stat-unsuccessful').textContent = stats.unsuccessful || 0;
+  document.getElementById('stat-rate').textContent = stats.total
+    ? `${Math.round((stats.successful / stats.total) * 100)}%` : '—';
+
+  const total = stats.total || 0;
+  const start = total ? (state.page - 1) * state.pageSize + 1 : 0;
+  const end = Math.min(state.page * state.pageSize, total);
+  document.getElementById('crm-range').textContent = `Showing ${start}–${end} of ${total.toLocaleString()} calls`;
+  document.getElementById('crm-pages').textContent = `Page ${state.page} of ${data.pages || 1}`;
+  document.getElementById('crm-prev').disabled = state.page <= 1;
+  document.getElementById('crm-next').disabled = state.page >= (data.pages || 1);
+}
+
+document.getElementById('call-search').addEventListener('input', (e) => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => { state.search = e.target.value.trim(); state.page = 1; loadCalls(); }, 300);
+});
+['status', 'direction', 'sentiment', 'outcome'].forEach(key => {
+  document.getElementById(`filter-${key}`).addEventListener('change', (e) => {
+    state[key] = e.target.value; state.page = 1; loadCalls();
+  });
+});
+document.getElementById('crm-prev').addEventListener('click', () => { state.page = Math.max(1, state.page - 1); loadCalls(); });
+document.getElementById('crm-next').addEventListener('click', () => { state.page += 1; loadCalls(); });
+
+document.getElementById('call-tbody').addEventListener('click', (e) => {
+  const row = e.target.closest('tr[data-id]');
+  if (row) openDrawer(row.dataset.id);
+});
+
+const drawer = document.getElementById('call-drawer');
+
+function transcriptHtml(transcriptObject) {
+  if (!transcriptObject || !transcriptObject.length) return '<div class="empty-state">No transcript available.</div>';
+  return `<div class="sms-messages" style="background:transparent;padding:0">` + transcriptObject.map(turn => {
+    const cls = turn.role === 'agent' ? 'outbound staff' : (turn.role === 'user' ? 'inbound' : 'outbound system');
+    return `<div class="sms-bubble ${cls}"><div class="sms-bubble-body">${esc(turn.content)}</div></div>`;
+  }).join('') + `</div>`;
+}
+
+function relatedCallsHtml(related) {
+  if (!related || !related.length) return '<div class="empty-state">No other calls from this number.</div>';
+  return related.map(r => `
+    <div class="ops-row">
+      <div>
+        <strong>${esc(r.direction || '')}</strong>
+        <small>${esc(fmtTime(r.start_timestamp))} · ${esc(fmtDuration(r.duration_ms))}</small>
+      </div>
+      ${outcomeLabel(r.call_successful)}
+    </div>`).join('');
+}
+
+async function openDrawer(callId) {
+  drawer.classList.add('open');
+  drawer.setAttribute('aria-hidden', 'false');
+  document.getElementById('call-drawer-title').textContent = callId;
+  document.getElementById('call-drawer-body').innerHTML = '<div class="crm-loading">Loading…</div>';
+
+  const response = await fetch(`/api/calls/${encodeURIComponent(callId)}`);
+  const data = await response.json();
+  if (!response.ok || !data.ok) {
+    document.getElementById('call-drawer-body').innerHTML = '<div class="empty-state">Could not load this call.</div>';
+    return;
+  }
+  const c = data.call;
+  const raw = data.raw || {};
+
+  document.getElementById('call-drawer-body').innerHTML = `
+    <div class="crm-drawer-grid">
+      <label>Agent<input value="${esc(c.agent_name || c.agent_id || '—')}" disabled></label>
+      <label>Direction<input value="${esc(c.direction || '—')}" disabled></label>
+      <label>From<input value="${esc(c.from_number || '—')}" disabled></label>
+      <label>To<input value="${esc(c.to_number || '—')}" disabled></label>
+      <label>Status<input value="${esc(c.call_status || '—')}" disabled></label>
+      <label>Outcome<input value="${c.call_successful === 1 ? 'Successful' : (c.call_successful === 0 ? 'Unsuccessful' : '—')}" disabled></label>
+      <label>Sentiment<input value="${esc(c.user_sentiment || '—')}" disabled></label>
+      <label>End Reason<input value="${esc((c.disconnection_reason || '').replace(/_/g,' ')) || '—'}" disabled></label>
+      <label>Duration<input value="${esc(fmtDuration(c.duration_ms))}" disabled></label>
+      <label>Cost<input value="${esc(fmtCost(c.cost_cents))}" disabled></label>
+      <label>End to End Latency<input value="${c.e2e_latency_ms != null ? Math.round(c.e2e_latency_ms) + 'ms' : '—'}" disabled></label>
+      <label>Start Time<input value="${esc(fmtTime(c.start_timestamp))}" disabled></label>
+    </div>
+
+    ${c.recording_url ? `<audio controls style="width:100%;margin-bottom:20px" src="${esc(c.recording_url)}"></audio>` : ''}
+
+    <h2 style="font-size:16px;margin-bottom:8px">Summary</h2>
+    <p class="muted-copy" style="margin-bottom:20px">${esc(c.call_summary || 'Not available.')}</p>
+
+    <h2 style="font-size:16px;margin-bottom:8px">Transcript</h2>
+    ${transcriptHtml(raw.transcript_object)}
+
+    <h2 style="font-size:16px;margin:20px 0 8px">Other Calls From This Number</h2>
+    ${relatedCallsHtml(data.related)}
+  `;
+}
+
+function closeDrawer() {
+  drawer.classList.remove('open');
+  drawer.setAttribute('aria-hidden', 'true');
+}
+document.getElementById('call-drawer-close').addEventListener('click', closeDrawer);
+document.getElementById('call-drawer-backdrop').addEventListener('click', closeDrawer);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && drawer.classList.contains('open')) closeDrawer(); });
+
+loadCalls();
+</script>
+{% endblock %}
