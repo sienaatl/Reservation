@@ -193,21 +193,33 @@ document.getElementById('call-search').addEventListener('input', (e) => {
 document.getElementById('crm-prev').addEventListener('click', () => { state.page = Math.max(1, state.page - 1); loadCalls(); });
 document.getElementById('crm-next').addEventListener('click', () => { state.page += 1; loadCalls(); });
 
+// silent=true (page load) swallows errors instead of alerting -- a missing
+// RETELL_API_KEY or a network hiccup shouldn't block viewing whatever's
+// already stored locally. silent=false (the button) surfaces failures.
+async function syncCalls(silent) {
+  try {
+    const response = await fetch('/calls/sync', { method: 'POST' });
+    const data = await response.json();
+    if (!response.ok || !data.ok) {
+      if (!silent) alert((data && data.error) || 'Unable to sync calls.');
+      return false;
+    }
+    return true;
+  } catch (err) {
+    if (!silent) alert('Unable to sync calls.');
+    return false;
+  }
+}
+
 document.getElementById('sync-button').addEventListener('click', async (e) => {
   const btn = e.currentTarget;
   btn.disabled = true;
   btn.textContent = 'Syncing…';
   try {
-    const response = await fetch('/calls/sync', { method: 'POST' });
-    const data = await response.json();
-    if (!response.ok || !data.ok) {
-      alert((data && data.error) || 'Unable to sync calls.');
-    } else {
+    if (await syncCalls(false)) {
       state.page = 1;
       await loadCalls();
     }
-  } catch (err) {
-    alert('Unable to sync calls.');
   } finally {
     btn.disabled = false;
     btn.textContent = 'Sync';
@@ -281,6 +293,9 @@ document.getElementById('call-drawer-close').addEventListener('click', closeDraw
 document.getElementById('call-drawer-backdrop').addEventListener('click', closeDrawer);
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && drawer.classList.contains('open')) closeDrawer(); });
 
-loadCalls();
+(async function init() {
+  await syncCalls(true);
+  await loadCalls();
+})();
 </script>
 {% endblock %}

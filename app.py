@@ -2035,7 +2035,10 @@ def api_calls():
     page = max(request.args.get("page", 1, type=int) or 1, 1)
     offset = (page - 1) * limit
 
-    query = "SELECT * FROM calls WHERE 1=1"
+    # web_call rows are test sessions run from Retell's own playground (e.g.
+    # call_id "test_call", perpetually "ongoing") -- this dashboard is about
+    # the real phone-call AI agent, so those never belong in the list.
+    query = "SELECT * FROM calls WHERE call_type = 'phone_call'"
     params = []
     if status_filter != "all":
         query += " AND call_status = ?"; params.append(status_filter)
