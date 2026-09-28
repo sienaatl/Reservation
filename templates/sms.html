@@ -19,6 +19,8 @@
 <script>
 let conversations = [];
 let activePhone = null;
+let currentMessages = [];
+let messageFilter = 'all'; // 'all' | 'staff' | 'system'
 let pollTimer = null;
 
 function esc(value) {
@@ -35,16 +37,34 @@ function timeAgo(iso) {
   return then.toLocaleDateString();
 }
 
+function initials(label) {
+  const parts = String(label || '').trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '#';
+  return ((parts[0][0] || '') + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase();
+}
+
+// Automated sends (reservation confirmations/reminders, campaigns, the
+// n8n/AI-agent routes, STOP/START/HELP compliance replies) are logged with
+// source='system' by send_sms()'s default; only a reply typed in this tab's
+// composer carries source='staff'. Distinguishing the two is the point of
+// the filter below -- otherwise every automated text buries the handful of
+// messages a person actually typed.
+function previewPrefix(c) {
+  if (c.last_direction === 'inbound') return '';
+  return c.last_source === 'staff' ? 'You: ' : 'Auto: ';
+}
+
 function conversationRowHtml(c) {
   const label = c.guest_name || c.phone;
   return `
     <div class="sms-conv-row${c.phone === activePhone ? ' active' : ''}" data-phone="${esc(c.phone)}">
+      <div class="sms-avatar">${esc(initials(label))}</div>
       <div class="sms-conv-main">
         <div class="sms-conv-name">
           <span>${esc(label)}</span>
           <span class="sms-conv-time">${esc(timeAgo(c.last_at))}</span>
         </div>
-        <div class="sms-conv-preview${c.last_direction === 'outbound' ? ' outbound' : ''}">${esc(c.last_message)}</div>
+        <div class="sms-conv-preview">${esc(previewPrefix(c))}${esc(c.last_message)}</div>
       </div>
       ${c.unread_count > 0 ? `<span class="sms-conv-unread">${c.unread_count}</span>` : ''}
     </div>`;
@@ -83,12 +103,36 @@ function updateNavBadge(count) {
 }
 
 function bubbleHtml(m) {
-  const label = m.direction === 'inbound' ? 'them' : 'you';
+  let cls = `sms-bubble ${esc(m.direction)}`;
+  let label;
+  if (m.direction === 'inbound') {
+    label = 'guest';
+  } else if (m.source === 'staff') {
+    cls += ' staff';
+    label = 'you';
+  } else {
+    cls += ' system';
+    label = 'automated';
+  }
   return `
-    <div class="sms-bubble ${esc(m.direction)}">
-      ${esc(m.body)}
-      <time>${esc(label)} · ${esc(timeAgo(m.created_at))}</time>
+    <div class="${cls}">
+      ${m.direction === 'outbound' ? `<span class="sms-bubble-tag">${esc(label)}</span>` : ''}
+      <div class="sms-bubble-body">${esc(m.body)}</div>
+      <time>${esc(timeAgo(m.created_at))}</time>
     </div>`;
+}
+
+function renderMessages() {
+  const messagesEl = document.getElementById('sms-messages');
+  if (!messagesEl) return;
+  const filtered = currentMessages.filter(m => {
+    if (messageFilter === 'staff') return m.direction === 'inbound' || m.source === 'staff';
+    if (messageFilter === 'system') return m.direction === 'inbound' || m.source !== 'staff';
+    return true;
+  });
+  const wasAtBottom = messagesEl.scrollTop + messagesEl.clientHeight >= messagesEl.scrollHeight - 40;
+  messagesEl.innerHTML = filtered.map(bubbleHtml).join('') || '<div class="empty-state">No messages match this filter.</div>';
+  return wasAtBottom;
 }
 
 function chatPanelHtml(phone) {
@@ -96,8 +140,16 @@ function chatPanelHtml(phone) {
   const label = (c && c.guest_name) || phone;
   return `
     <div class="sms-chat-head">
-      <h2>${esc(label)}</h2>
-      <small>${esc(phone)}</small>
+      <div class="sms-avatar sms-avatar-lg">${esc(initials(label))}</div>
+      <div class="sms-chat-head-main">
+        <h2>${esc(label)}</h2>
+        <small>${esc(phone)}</small>
+      </div>
+      <div class="sms-filter-tabs" id="sms-filter-tabs">
+        <button type="button" class="checklist-tab active" data-filter="all">All</button>
+        <button type="button" class="checklist-tab" data-filter="staff">Staff</button>
+        <button type="button" class="checklist-tab" data-filter="system">Automated</button>
+      </div>
     </div>
     <div class="sms-messages" id="sms-messages"></div>
     <form class="sms-composer" id="sms-composer">
@@ -108,6 +160,7 @@ function chatPanelHtml(phone) {
 
 async function openConversation(phone) {
   activePhone = phone;
+  messageFilter = 'all';
   document.querySelectorAll('.sms-conv-row').forEach(row => {
     row.classList.toggle('active', row.dataset.phone === phone);
   });
@@ -121,6 +174,13 @@ async function openConversation(phone) {
       document.getElementById('sms-composer').requestSubmit();
     }
   });
+  document.getElementById('sms-filter-tabs').addEventListener('click', (e) => {
+    const btn = e.target.closest('.checklist-tab');
+    if (!btn) return;
+    messageFilter = btn.dataset.filter;
+    document.querySelectorAll('#sms-filter-tabs .checklist-tab').forEach(b => b.classList.toggle('active', b === btn));
+    renderMessages();
+  });
 
   await refreshMessages(phone, true);
   loadConversations(); // clears this conversation's unread badge/count
@@ -131,11 +191,10 @@ async function refreshMessages(phone, scrollToBottom) {
   const response = await fetch(`/api/sms/conversations/${encodeURIComponent(phone)}/messages`);
   if (!response.ok || phone !== activePhone) return;
   const data = await response.json();
+  currentMessages = data.items || [];
+  const wasAtBottom = renderMessages();
   const messagesEl = document.getElementById('sms-messages');
-  if (!messagesEl) return;
-  const wasAtBottom = messagesEl.scrollTop + messagesEl.clientHeight >= messagesEl.scrollHeight - 40;
-  messagesEl.innerHTML = (data.items || []).map(bubbleHtml).join('') || '<div class="empty-state">No messages yet.</div>';
-  if (scrollToBottom || wasAtBottom) {
+  if (messagesEl && (scrollToBottom || wasAtBottom)) {
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 }
