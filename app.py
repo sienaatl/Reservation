@@ -53,6 +53,11 @@ REVIEW_URL = os.getenv("REVIEW_URL", "https://g.page/r/CYL3k1UEWlCKEBM/review")
 ORDER_ONLINE_URL = os.getenv("ORDER_ONLINE_URL", "https://order.toasttab.com/online/sienaatl")
 RESERVATION_UPDATE_NOTIFICATION_EMAIL = os.getenv("RESERVATION_UPDATE_NOTIFICATION_EMAIL", "info@sienaatl.com")
 RETELL_API_KEY = os.getenv("RETELL_API_KEY", "")
+# Contact number shown in the large-party-inquiry email/SMS the AI phone
+# agent (via n8n) triggers -- kept separate from RESTAURANT_PHONE since that
+# one is shared with guest-facing confirmation/cancellation emails and SMS
+# this change wasn't meant to touch.
+LARGE_PARTY_CONTACT_PHONE = os.getenv("LARGE_PARTY_CONTACT_PHONE", "+1 (404) 999-0373")
 BIRTHDAY_SMS_ENABLED = os.getenv("BIRTHDAY_SMS_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
 REVIEW_SMS_ENABLED = os.getenv("REVIEW_SMS_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
 RUNNING_LATE_MINUTES = int(os.getenv("RUNNING_LATE_MINUTES", "15"))
@@ -2814,7 +2819,7 @@ Thank you for your interest in dining with us! For parties of {party_text}, plea
 
 {inquiry_url}
 
-If you have any questions, call us at {RESTAURANT_PHONE}.
+If you have any questions, call us at {LARGE_PARTY_CONTACT_PHONE}.
 
 Siena Restaurant and Bar
 {RESTAURANT_ADDRESS}
@@ -2834,10 +2839,10 @@ Siena Restaurant and Bar
       <a href="{inquiry_url}" style="display:block;text-align:center;margin:24px 0 10px;background:#6f1d2b;color:#fff;text-decoration:none;padding:15px;border-radius:8px;font-weight:bold">
         Submit Event Inquiry
       </a>
-      <p style="font-size:12px;color:#756b64;text-align:center">Questions? Call {RESTAURANT_PHONE}.</p>
+      <p style="font-size:12px;color:#756b64;text-align:center">Questions? Call {LARGE_PARTY_CONTACT_PHONE}.</p>
     </div>
     <div style="background:#111;color:#ddd;padding:20px;text-align:center;font-size:12px;line-height:1.7">
-      {RESTAURANT_ADDRESS}<br>{RESTAURANT_PHONE}
+      {RESTAURANT_ADDRESS}<br>{LARGE_PARTY_CONTACT_PHONE}
     </div>
   </div>
 </body>
@@ -2845,7 +2850,7 @@ Siena Restaurant and Bar
     email_sent = send_email(email, subject, html_body, text_body) if email else False
 
     sms_body = (f"Hi {first_name}, for parties of {party_text} please submit a request at "
-                f"{inquiry_url} so our team can arrange your visit. Questions? Call {RESTAURANT_PHONE}.")
+                f"{inquiry_url} so our team can arrange your visit. Questions? Call {LARGE_PARTY_CONTACT_PHONE}.")
     sms_sent = send_sms(phone, sms_body)
 
     return jsonify({
