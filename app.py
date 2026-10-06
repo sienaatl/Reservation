@@ -41,7 +41,7 @@ SMTP_USE_TLS = os.getenv("SMTP_USE_TLS", "true").lower() in {"1", "true", "yes",
 # the guest's own confirmation email -- e.g. rsvp@sienaatl.com. Blank skips
 # the notification entirely (booking always succeeds either way).
 STAFF_NOTIFICATION_EMAIL = os.getenv("STAFF_NOTIFICATION_EMAIL", "")
-RESTAURANT_PHONE = os.getenv("RESTAURANT_PHONE", "404-488-3399")
+RESTAURANT_PHONE = os.getenv("RESTAURANT_PHONE", "+1 (404) 999-0373")
 RESTAURANT_ADDRESS = os.getenv("RESTAURANT_ADDRESS", "124 Devore Rd, Alpharetta, GA 30009")
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
