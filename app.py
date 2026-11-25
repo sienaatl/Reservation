@@ -1757,6 +1757,32 @@ def settings_page():
                            checklists=checklists)
 
 
+@app.get("/api/closures")
+def api_closures():
+    """List of blocked dates (full or partial-area closures) managed from
+    Settings. Built for external callers (e.g. a phone-call AI agent via
+    n8n) to check before offering a reservation time -- the booking flow
+    itself already enforces this via hours_window_for_date(), this just
+    exposes the same data as a plain list. Defaults to today/future only,
+    since a past closure can't affect a new booking; pass
+    include_past=1 to see the full history Settings shows."""
+    require_admin()
+    include_past = str(request.args.get("include_past") or "").lower() in {"1", "true", "yes", "on"}
+    conn = db()
+    if include_past:
+        closures = conn.execute(
+            "SELECT closure_date, area, reason FROM closures ORDER BY closure_date"
+        ).fetchall()
+    else:
+        today = datetime.now().date().isoformat()
+        closures = conn.execute(
+            "SELECT closure_date, area, reason FROM closures WHERE closure_date >= ? ORDER BY closure_date",
+            (today,)
+        ).fetchall()
+    conn.close()
+    return jsonify({"items": [dict(c) for c in closures]})
+
+
 @app.post("/settings/staff/<int:user_id>/password")
 @role_required("manager")
 def change_staff_password(user_id):
